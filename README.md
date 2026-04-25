@@ -41,7 +41,7 @@ python main.py setup
 python main.py
 
 # 单次 CLI
-python main.py "你好，我叫小明"
+python main.py "你好，我叫席朋飞"
 
 # WebUI
 python main.py webui
