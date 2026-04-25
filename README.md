@@ -1,10 +1,11 @@
 # czon agent
 
 极简 Python Agent Runtime，
-极简,优雅,只保留核心基本功能,通过即插即用的skills 适配不同的垂直场景,专注企业生产力的AI Agent.
+极简,优雅,只保留核心基本功能,
+通过即插即用的skills 适配不同的垂直场景,专注企业生产力的AI Agent.
 支持 OpenAI-compatible LLM、Skills、工具策略控制和 WebUI 流式输出。
 
-czon Agent 的定位不是普通聊天机器人，而是一个最小执行内核：优先使用 Skills，其次使用 read/write/bash；如果现有工具解决不了，可直接插入符合能力要求的Skill。
+czon agent 的定位不是普通聊天机器人，而是一个最小执行内核：优先使用 Skills，其次使用 read/write/bash；如果现有工具解决不了，可直接插入符合能力要求的Skill。
 
 当前支持 Kimi / Qwen / DeepSeek。
 
