@@ -1,4 +1,4 @@
-# czon_agent
+# CZON_Agent
 
 极简 Python Agent Runtime，
 极简,优雅,只保留核心基本功能,通过即插即用的skills 适配不同的垂直场景,专注企业生产力的AI Agent.
