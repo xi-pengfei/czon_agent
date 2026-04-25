@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mini Agent</title>
+  <title>czon Agent</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -23,9 +23,13 @@
 
   <!-- 顶部栏 -->
   <header class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between flex-shrink-0">
-    <span class="font-semibold text-gray-800 tracking-tight">Mini Agent</span>
+    <span class="font-semibold text-gray-800 tracking-tight">czon_agent</span>
     <div class="flex items-center gap-2">
-      <span class="text-sm text-gray-500">Model:</span>
+      <button id="new-chat-btn"
+        class="text-sm border border-gray-200 rounded-md px-2 py-1 bg-white text-gray-600 hover:border-indigo-400 hover:text-indigo-600">
+        新对话
+      </button>
+      <span class="text-sm text-gray-500">模型:</span>
       <select id="provider-select"
         class="text-sm border border-gray-200 rounded-md px-2 py-1 bg-white text-gray-700 cursor-pointer hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500">
       </select>
@@ -69,8 +73,13 @@
 
 <script>
 // ── 状态 ────────────────────────────────────────────────
-let uploadedPaths = [];  // 已上传文件路径
+let uploadedAttachments = [];  // 已上传附件
 const ls = localStorage;
+const ss = sessionStorage;
+const messageStates = new Map();
+const confirmingIds = new Set();
+let sessionId = ss.getItem('czon_agent_session_id') || createSessionId();
+ss.setItem('czon_agent_session_id', sessionId);
 
 // ── 初始化 providers ─────────────────────────────────────
 async function loadProviders() {
@@ -87,14 +96,14 @@ async function loadProviders() {
       sel.appendChild(opt);
     });
     // 恢复上次选择
-    const saved = ls.getItem('mini_agent_provider');
+    const saved = ls.getItem('czon_agent_provider');
     if (saved && [...sel.options].some(o => o.value === saved && !o.disabled)) {
       sel.value = saved;
     }
   } catch (e) {
     sel.innerHTML = '<option value="kimi">kimi</option>';
   }
-  sel.addEventListener('change', () => ls.setItem('mini_agent_provider', sel.value));
+  sel.addEventListener('change', () => ls.setItem('czon_agent_provider', sel.value));
 }
 
 // ── 文件上传 ─────────────────────────────────────────────
@@ -122,7 +131,7 @@ async function handleFiles(files) {
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: fd });
       const data = await res.json();
-      uploadedPaths.push(data.path);
+      uploadedAttachments.push(data);
       const chip = document.createElement('div');
       chip.className = 'flex items-center gap-1 px-2 py-1 bg-indigo-50 border border-indigo-200 rounded text-xs text-indigo-700';
       chip.innerHTML = `📎 ${file.name} <button class="ml-1 text-indigo-400 hover:text-red-500" onclick="removeFile('${data.path}', this)">✕</button>`;
@@ -134,15 +143,16 @@ async function handleFiles(files) {
 }
 
 function removeFile(path, btn) {
-  uploadedPaths = uploadedPaths.filter(p => p !== path);
+  uploadedAttachments = uploadedAttachments.filter(item => item.path !== path);
   btn.parentElement.remove();
-  if (uploadedPaths.length === 0) {
+  if (uploadedAttachments.length === 0) {
     document.getElementById('file-preview').classList.add('hidden');
   }
 }
 
 // ── 发送消息 ─────────────────────────────────────────────
 document.getElementById('send-btn').addEventListener('click', sendMessage);
+document.getElementById('new-chat-btn').addEventListener('click', newChat);
 document.getElementById('input-text').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
@@ -157,13 +167,24 @@ async function sendMessage() {
   const text = inputArea.value.trim();
   if (!text) return;
 
+  const pending = findLatestPendingConfirmation();
+  const normalizedText = text.replace(/\s/g, '');
+  if (uploadedAttachments.length === 0 && pending && ['确认', '确认执行', '同意'].includes(normalizedText)) {
+    inputArea.value = '';
+    inputArea.style.height = 'auto';
+    document.getElementById('empty-hint')?.remove();
+    appendUserMessage(text, []);
+    await confirmTool(pending.confirmationId, pending.agentMsgId);
+    return;
+  }
+
   const provider = document.getElementById('provider-select').value;
-  const paths = [...uploadedPaths];
+  const attachments = [...uploadedAttachments];
 
   // 清空输入
   inputArea.value = '';
   inputArea.style.height = 'auto';
-  uploadedPaths = [];
+  uploadedAttachments = [];
   document.getElementById('file-preview').innerHTML = '';
   document.getElementById('file-preview').classList.add('hidden');
 
@@ -171,7 +192,7 @@ async function sendMessage() {
   document.getElementById('empty-hint')?.remove();
 
   // 显示用户消息
-  appendUserMessage(text, paths);
+  appendUserMessage(text, attachments);
 
   // 禁用发送
   const btn = document.getElementById('send-btn');
@@ -183,38 +204,237 @@ async function sendMessage() {
   appendAgentPlaceholder(agentMsgId);
 
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, image_paths: paths, provider }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      updateAgentMessage(agentMsgId, null, null, err.detail || '请求失败');
-    } else {
-      const data = await res.json();
-      updateAgentMessage(agentMsgId, data.reply, data.steps, null);
-    }
+    await streamChat(agentMsgId, { text, attachments, provider, session_id: sessionId });
   } catch (e) {
-    updateAgentMessage(agentMsgId, null, null, '网络错误：' + e.message);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, attachments, provider, session_id: sessionId }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        updateAgentMessage(agentMsgId, null, null, err.detail || '请求失败');
+      } else {
+        const data = await res.json();
+        updateAgentMessage(agentMsgId, data.reply, data.steps, null);
+      }
+    } catch (fallbackError) {
+      updateAgentMessage(agentMsgId, null, null, '网络错误：' + fallbackError.message);
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = '发送';
   }
 }
 
+async function newChat() {
+  closeConfirmDialog();
+  confirmingIds.clear();
+  messageStates.clear();
+  uploadedAttachments = [];
+  document.getElementById('file-preview').innerHTML = '';
+  document.getElementById('file-preview').classList.add('hidden');
+
+  const oldSessionId = sessionId;
+  sessionId = createSessionId();
+  ss.setItem('czon_agent_session_id', sessionId);
+
+  document.getElementById('chat-box').innerHTML = '<div id="empty-hint" class="text-center text-gray-400 text-sm mt-16">发送消息开始对话</div>';
+
+  try {
+    await fetch('/api/session/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: oldSessionId }),
+    });
+  } catch {
+    // 本地已经切换到新会话，服务端清理失败不影响继续使用。
+  }
+}
+
+async function streamChat(agentMsgId, payload) {
+  const res = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  if (!res.ok || !res.body) throw new Error('流式接口不可用');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const steps = [];
+  let reply = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() || '';
+
+    for (const chunk of chunks) {
+      const event = parseSseChunk(chunk);
+      if (!event) continue;
+
+      if (event.event === 'tool_result' || event.event === 'confirmation_required') {
+        steps.push(event.data);
+        updateAgentMessage(agentMsgId, reply || '执行中…', steps, null);
+        if (event.event === 'confirmation_required') {
+          showConfirmDialog(event.data, agentMsgId);
+        }
+      } else if (event.event === 'agent_start') {
+        updateAgentMessage(agentMsgId, '已连接，等待模型决策…', steps, null);
+      } else if (event.event === 'assistant_delta') {
+        reply += event.data.text || '';
+        updateAgentMessage(agentMsgId, reply, steps, null);
+      } else if (event.event === 'agent_done') {
+        reply = event.data.reply || '';
+        updateAgentMessage(agentMsgId, reply, steps, null);
+      } else if (event.event === 'agent_error') {
+        updateAgentMessage(agentMsgId, null, null, event.data.error || '请求失败');
+      }
+    }
+  }
+}
+
+async function confirmTool(confirmationId, agentMsgId) {
+  if (confirmingIds.has(confirmationId)) return;
+  confirmingIds.add(confirmationId);
+
+  const state = messageStates.get(agentMsgId) || { reply: '', steps: [] };
+  const confirmedStep = state.steps.find(s => {
+    const confirmation = s.result && s.result.meta && s.result.meta.confirmation;
+    return confirmation && confirmation.id === confirmationId;
+  });
+  if (confirmedStep) {
+    confirmedStep.result.meta.confirmation.executed = true;
+    updateAgentMessage(agentMsgId, state.reply, state.steps, null);
+  }
+
+  try {
+    const res = await fetch('/api/tool/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation_id: confirmationId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '确认执行失败');
+
+    state.steps.push(data.step);
+    state.reply = summarizeConfirmedStep(data.step);
+    updateAgentMessage(agentMsgId, state.reply, state.steps, null);
+    closeConfirmDialog();
+  } catch (e) {
+    if (confirmedStep) {
+      confirmedStep.result.meta.confirmation.executed = false;
+    }
+    state.steps.push({
+      type: 'tool_call',
+      name: 'confirm',
+      args: { confirmation_id: confirmationId },
+      result: {
+        ok: false,
+        data: null,
+        error: { type: 'ConfirmationExecuteError', message: e.message, recoverable: true },
+        meta: {},
+      },
+    });
+    updateAgentMessage(agentMsgId, state.reply || '确认执行失败。', state.steps, null);
+  } finally {
+    confirmingIds.delete(confirmationId);
+  }
+}
+
+function summarizeConfirmedStep(step) {
+  const result = step.result || {};
+  const data = result.data || {};
+  if (!result.ok) {
+    const message = result.error && result.error.message ? result.error.message : '确认后的工具执行失败。';
+    return `确认后的操作执行失败：${message}`;
+  }
+  if (step.name === 'bash' && typeof data.exit_code !== 'undefined') {
+    const stdout = (data.stdout || '').trim();
+    return stdout ? `确认后的命令已执行，输出：\n${stdout}` : '确认后的命令已执行，未产生输出。';
+  }
+  return '确认后的操作已执行。';
+}
+
+function showConfirmDialog(step, agentMsgId) {
+  const result = step.result || {};
+  const confirmation = result.meta && result.meta.confirmation;
+  if (!confirmation || !confirmation.id) return;
+
+  closeConfirmDialog();
+
+  const command = confirmation.args && confirmation.args.command
+    ? confirmation.args.command
+    : JSON.stringify(confirmation.args || step.args);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'confirm-modal';
+  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4';
+  overlay.innerHTML = `<div class="bg-white rounded-lg shadow-xl border border-gray-200 w-full max-w-lg p-5">
+    <div class="text-sm font-semibold text-gray-900 mb-2">需要确认执行</div>
+    <div class="text-sm text-gray-600 mb-3">${escHtml(confirmation.reason || '该操作需要确认。')}</div>
+    <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto mb-4">${escHtml(command)}</pre>
+    <div class="flex justify-end gap-2">
+      <button class="px-3 py-1.5 rounded border border-gray-200 text-sm text-gray-700 hover:bg-gray-50"
+        onclick="closeConfirmDialog()">取消</button>
+      <button class="px-3 py-1.5 rounded bg-amber-600 text-sm text-white hover:bg-amber-700"
+        onclick="confirmTool('${escHtml(confirmation.id)}', '${escHtml(agentMsgId)}')">确认执行</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
+function closeConfirmDialog() {
+  document.getElementById('confirm-modal')?.remove();
+}
+
+function findLatestPendingConfirmation() {
+  const entries = Array.from(messageStates.entries()).reverse();
+  for (const [agentMsgId, state] of entries) {
+    const steps = [...(state.steps || [])].reverse();
+    for (const step of steps) {
+      const confirmation = step.result && step.result.meta && step.result.meta.confirmation;
+      if (confirmation && confirmation.id && !confirmation.executed) {
+        return { confirmationId: confirmation.id, agentMsgId };
+      }
+    }
+  }
+  return null;
+}
+
+function parseSseChunk(chunk) {
+  const lines = chunk.split('\n');
+  const eventLine = lines.find(line => line.startsWith('event: '));
+  const dataLine = lines.find(line => line.startsWith('data: '));
+  if (!eventLine || !dataLine) return null;
+  try {
+    return {
+      event: eventLine.slice(7).trim(),
+      data: JSON.parse(dataLine.slice(6)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── DOM 工具函数 ─────────────────────────────────────────
-function appendUserMessage(text, paths) {
+function appendUserMessage(text, attachments) {
   const box = document.getElementById('chat-box');
   const wrap = document.createElement('div');
   wrap.className = 'flex justify-end';
   const bubble = document.createElement('div');
   bubble.className = 'msg-user rounded-2xl px-4 py-3 max-w-lg text-sm text-gray-800 whitespace-pre-wrap';
   bubble.textContent = text;
-  if (paths.length) {
+  if (attachments.length) {
     const files = document.createElement('div');
     files.className = 'mt-1 text-xs text-gray-400';
-    files.textContent = '📎 ' + paths.map(p => p.split('/').pop()).join(', ');
+    files.textContent = '📎 ' + attachments.map(item => item.name || item.path.split('/').pop()).join(', ');
     bubble.appendChild(files);
   }
   wrap.appendChild(bubble);
@@ -240,6 +460,10 @@ function updateAgentMessage(id, reply, steps, error) {
   const wrap = document.getElementById(id);
   if (!wrap) return;
 
+  if (!error) {
+    messageStates.set(id, { reply, steps: steps || [] });
+  }
+
   if (error) {
     wrap.innerHTML = `<div class="msg-agent rounded-2xl px-4 py-3 max-w-2xl text-sm text-red-600">${escHtml(error)}</div>`;
     document.getElementById('chat-box').scrollTop = 9999;
@@ -253,18 +477,33 @@ function updateAgentMessage(id, reply, steps, error) {
     html += '<div class="space-y-1 mb-3">';
     steps.forEach((s, i) => {
       const argsStr = JSON.stringify(s.args).slice(0, 80);
+      const result = s.result || {};
+      const error = result.error;
+      const isConfirm = error && error.type === 'ConfirmationRequired';
+      const isError = error && error.type !== 'ConfirmationRequired';
+      const confirmation = result.meta && result.meta.confirmation;
+      const confirmationId = confirmation && !confirmation.executed && confirmation.id;
+      const rowClass = isConfirm
+        ? 'bg-amber-50 border-l-3 border-amber-400 text-amber-700'
+        : isError
+          ? 'bg-red-50 border-l-3 border-red-400 text-red-700'
+          : 'tool-row text-indigo-700';
+      const icon = isConfirm ? '⚠️' : isError ? '✕' : '🔧';
+      const detail = JSON.stringify(result, null, 2);
       const detailId = `detail-${id}-${i}`;
-      html += `<div class="tool-row rounded px-3 py-1.5 text-xs text-indigo-700 cursor-pointer select-none"
+      html += `<div class="${rowClass} rounded px-3 py-1.5 text-xs cursor-pointer select-none"
         onclick="document.getElementById('${detailId}').classList.toggle('open')">
-        🔧 <strong>${escHtml(s.name)}</strong>(${escHtml(argsStr)}…)
-        <div id="${detailId}" class="tool-detail mt-1 text-gray-500 font-mono text-xs">${escHtml(s.result)}</div>
+        ${icon} <strong>${escHtml(s.name)}</strong>(${escHtml(argsStr)}…)
+        <div id="${detailId}" class="tool-detail mt-1 text-gray-500 font-mono text-xs">${escHtml(detail)}</div>
+        ${confirmationId ? `<button class="mt-2 px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-700"
+          onclick="event.stopPropagation(); confirmTool('${escHtml(confirmationId)}', '${escHtml(id)}')">确认执行</button>` : ''}
       </div>`;
     });
     html += '</div>';
   }
 
-  // 最终回复（简单 markdown-ish 渲染：换行）
-  html += `<div class="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">${escHtml(reply)}</div>`;
+  // 最终回复：支持少量 Markdown 链接，主要用于下载文件
+  html += `<div class="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">${renderMessage(reply)}</div>`;
 
   wrap.innerHTML = `<div class="msg-agent rounded-2xl px-4 py-3 max-w-2xl">${html}</div>`;
   document.getElementById('chat-box').scrollTop = 9999;
@@ -284,6 +523,18 @@ function escHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function renderMessage(text) {
+  const escaped = escHtml(text);
+  return escaped.replace(/\[([^\]\n]+)\]\((\/download\/[^)\s]+)\)/g, (_match, label, href) => {
+    return `<a href="${href}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100">${label}</a>`;
+  });
+}
+
+function createSessionId() {
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  return 'session-' + Date.now() + '-' + Math.random().toString(16).slice(2);
 }
 
 // ── 启动 ─────────────────────────────────────────────────

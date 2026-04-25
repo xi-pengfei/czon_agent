@@ -26,7 +26,7 @@ PROVIDERS: Dict[str, Dict] = {
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-chat",
+        "default_model": "deepseek-v4-pro",
         "supports_vision": False,
         "env_key": "DEEPSEEK_API_KEY",
     },
@@ -51,6 +51,19 @@ class LLM:
         调用 chat.completions.create，返回原始 message 对象。
         如果 provider 不支持视觉但消息里含图片，把图片 url 替换为文字提示并警告。
         """
+        kwargs = self._build_chat_kwargs(system, messages, tools)
+        response = self.client.chat.completions.create(**kwargs)
+        msg = response.choices[0].message
+        logger.debug(f"LLM 响应：content={str(msg.content)[:200]}, tool_calls={msg.tool_calls}")
+        return msg
+
+    def stream_complete(self, system: str, messages: List, tools: List):
+        """以 stream=True 调用 chat.completions.create，返回 chunk iterator。"""
+        kwargs = self._build_chat_kwargs(system, messages, tools)
+        kwargs["stream"] = True
+        return self.client.chat.completions.create(**kwargs)
+
+    def _build_chat_kwargs(self, system: str, messages: List, tools: List) -> Dict:
         if not self._supports_vision:
             messages = self._strip_images(messages)
 
@@ -64,11 +77,7 @@ class LLM:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-
-        response = self.client.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
-        logger.debug(f"LLM 响应：content={str(msg.content)[:200]}, tool_calls={msg.tool_calls}")
-        return msg
+        return kwargs
 
     def _strip_images(self, messages: List) -> List:
         """DeepSeek 不支持视觉，把图片内容替换为文字说明"""

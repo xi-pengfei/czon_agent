@@ -13,18 +13,19 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-def run_once(agent, text: str, image_paths: Optional[List[str]] = None):
+def print_step(step):
+    args_summary = str(step["args"])[:80]
+    console.print(f"  [yellow]🔧 {step['name']}({args_summary})[/yellow]")
+
+
+def run_once(agent, text: str, attachments: Optional[List[str]] = None):
     """执行单次请求并打印结果"""
     console.print(f"[bold cyan]用户:[/bold cyan] {text}")
-    if image_paths:
-        console.print(f"[dim]图片：{image_paths}[/dim]")
-
-    def on_step(step):
-        args_summary = str(step["args"])[:80]
-        console.print(f"  [yellow]🔧 {step['name']}({args_summary})[/yellow]")
+    if attachments:
+        console.print(f"[dim]附件：{attachments}[/dim]")
 
     try:
-        reply, steps = agent.run(text, image_paths=image_paths, on_step=on_step)
+        reply, steps = agent.run(text, attachments=attachments, on_step=print_step)
         console.print()
         console.print(Panel(Markdown(reply), title="[bold green]Agent 回复[/bold green]", border_style="green"))
         return reply
@@ -37,7 +38,7 @@ def run_once(agent, text: str, image_paths: Optional[List[str]] = None):
 def run_interactive(agent):
     """交互式 REPL 模式"""
     console.print(Panel(
-        "[bold]Mini Agent — 交互模式[/bold]\n输入消息后按 Enter 发送，输入 [cyan]exit[/cyan] 或 [cyan]quit[/cyan] 退出",
+        "[bold]czon Agent — 交互模式[/bold]\n输入消息后按 Enter 发送，输入 [cyan]exit[/cyan] 或 [cyan]quit[/cyan] 退出",
         border_style="blue",
     ))
 
@@ -54,12 +55,8 @@ def run_interactive(agent):
             console.print("[dim]再见！[/dim]")
             break
 
-        def on_step(step):
-            args_summary = str(step["args"])[:80]
-            console.print(f"  [yellow]🔧 {step['name']}({args_summary})[/yellow]")
-
         try:
-            reply, _ = agent.run(text, on_step=on_step)
+            reply, _ = agent.run(text, on_step=print_step)
             console.print()
             console.print(Panel(Markdown(reply), title="[bold green]Agent[/bold green]", border_style="green"))
             console.print()

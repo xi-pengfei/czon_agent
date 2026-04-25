@@ -8,9 +8,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_CHARS = 10_000
 
-# write 只允许写入这些目录
-_ALLOWED_WRITE_DIRS = ["workspace", "uploads", "logs"]
-
 
 def read_file(path: str) -> str:
     """读取文件内容，超过 10000 字符截断，二进制文件返回错误"""
@@ -32,25 +29,15 @@ def read_file(path: str) -> str:
     return content
 
 
-def write_file(path: str, content: str) -> str:
-    """向文件写入内容，只允许写入 workspace/、uploads/、logs/ 目录"""
+def write_file(path: str, content: str, workspace_dir: str) -> str:
+    """向文件写入内容，只允许写入 workspace 目录"""
+    allowed_dir = Path(workspace_dir).resolve()
     p = Path(path).resolve()
 
-    # 安全限制：检查目标目录
-    allowed = False
-    for allowed_dir in _ALLOWED_WRITE_DIRS:
-        # 相对路径检查：路径的第一个组件必须是允许的目录之一
-        parts = Path(path).parts
-        if parts and parts[0] in _ALLOWED_WRITE_DIRS:
-            allowed = True
-            break
-        # 绝对路径检查：包含允许目录作为组件
-        if allowed_dir in p.parts:
-            allowed = True
-            break
-
-    if not allowed:
-        return f"[error] 安全限制：write 只能写入 {', '.join(_ALLOWED_WRITE_DIRS)} 目录。目标路径：{path}"
+    try:
+        p.relative_to(allowed_dir)
+    except ValueError:
+        return f"[error] 安全限制：write 只能写入 {workspace_dir}/ 目录。目标路径：{path}"
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +48,7 @@ def write_file(path: str, content: str) -> str:
         return f"[error] 写文件失败：{e}"
 
 
-def register(registry):
+def register(registry, workspace_dir: str):
     """向 ToolRegistry 注册 read 和 write 工具"""
     registry.register(
         name="read",
@@ -78,14 +65,14 @@ def register(registry):
 
     registry.register(
         name="write",
-        description="Write text content to a file. Creates parent directories if needed. Overwrites existing file. Only allowed in workspace/, uploads/, logs/ directories.",
+        description=f"Write text content to a file. Creates parent directories if needed. Overwrites existing file. Only allowed in {workspace_dir}/.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path (must be under workspace/, uploads/, or logs/)"},
+                "path": {"type": "string", "description": f"File path (must be under {workspace_dir}/)"},
                 "content": {"type": "string", "description": "Text content to write"},
             },
             "required": ["path", "content"],
         },
-        handler=write_file,
+        handler=lambda path, content: write_file(path, content, workspace_dir=workspace_dir),
     )

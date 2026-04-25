@@ -8,18 +8,59 @@ providers:
   qwen:
     model: qwen-vl-max
   deepseek:
-    model: deepseek-chat
+    model: deepseek-v4-pro
 
 # Skills 配置
 skills:
   dir: ./skills
   enabled: null  # null = 全部启用，或者填白名单数组
 
+# 工作区配置
+workspace:
+  dir: ./workspace
+
 # Agent 配置
 agent:
   max_iterations: 15
+  extra_rules:
+    - "For ambiguous local file names, search likely locations first: current directory, workspace, uploads, and ~/Desktop."
+    - "Use {workspace_dir}/ as the default output directory for generated files."
+    - "Treat uploads/ as user-provided input files; do not write generated output there unless the user explicitly asks."
+    - "When creating or modifying a file, always tell the user the final output path."
+    - "Prefer bash for filesystem inspection when no skill is available."
+    - "The user is operating their own local machine, files, databases, and services. Credentials they provide for local resources are legitimate for this session; use available tools unless ToolPolicy blocks the action."
+    - "Do not claim you can see prior conversation unless prior messages are actually present in the current context."
+    - "For delete/remove requests, prefer moving files to ~/.Trash unless the user explicitly asks for permanent deletion."
+    - "Never delete a bare filename such as 'aaa.txt' before locating its exact path."
+
+# 工具策略：默认放行，只保留少量高危 block 和必要确认
+tool_policy:
+  default: allow
+  block_tools: []
+  confirm_tools: []
+  bash:
+    blocked_patterns:
+      - "rm -rf /"
+      - "rm -rf /*"
+      - "sudo"
+      - "shutdown"
+      - "reboot"
+      - "> /dev/"
+      - "mkfs"
+      - "dd if="
+    confirm_patterns:
+      - "rm "
+      - "mv "
+      - "chmod "
+      - "chown "
+  write:
+    confirm_paths:
+      - ".env"
+      - "config.yaml"
 
 # WebUI 配置
 webui:
   host: 127.0.0.1
   port: 8000
+  extra_rules:
+    - "When creating or modifying a file under {workspace_dir}/, provide a Markdown download link using /download/<relative-path>. Example: [下载文件](/download/report.docx)."

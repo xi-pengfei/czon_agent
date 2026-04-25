@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Mini Agent 统一入口
+czon Agent 统一入口
 
 子命令：
-  python main.py cli "消息内容"        # 单次执行并退出
-  python main.py cli --interactive     # 交互式 REPL
+  python main.py                       # 交互式 REPL
+  python main.py "消息内容"             # 单次执行并退出
   python main.py webui                 # 启动 WebUI（默认端口 8000）
   python main.py setup                 # 初始化示例数据（sample.db）
 """
@@ -34,7 +34,7 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     from core.agent import Agent
     from core.llm import make_llm_from_config
     from core.skills import SkillLoader
-    from core.tools import ToolRegistry
+    from core.tools import ToolPolicy, ToolRegistry
     from tools_builtin import file_ops, shell, skill_ops
 
     # 如果有 provider 覆盖（WebUI 切换模型用）
@@ -50,13 +50,27 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     skill_loader = SkillLoader(skills_dir=skills_dir, enabled=enabled)
     skill_loader.scan()
 
-    registry = ToolRegistry()
-    file_ops.register(registry)
+    workspace_dir = config.get("workspace", {}).get("dir", "./workspace")
+
+    tool_policy = ToolPolicy(config.get("tool_policy", {}))
+    registry = ToolRegistry(policy=tool_policy)
+    file_ops.register(registry, workspace_dir=workspace_dir)
     shell.register(registry)
     skill_ops.register(registry, skill_loader)
 
-    max_iter = config.get("agent", {}).get("max_iterations", 15)
-    return Agent(llm=llm, skill_loader=skill_loader, tool_registry=registry, max_iterations=max_iter)
+    agent_cfg = config.get("agent", {})
+    max_iter = agent_cfg.get("max_iterations", 15)
+    extra_rules = [
+        _render_rule(rule, workspace_dir)
+        for rule in (agent_cfg.get("extra_rules") or [])
+    ]
+    return Agent(
+        llm=llm,
+        skill_loader=skill_loader,
+        tool_registry=registry,
+        max_iterations=max_iter,
+        extra_rules=extra_rules,
+    )
 
 
 def cmd_setup(config: dict):
@@ -73,20 +87,16 @@ def cmd_setup(config: dict):
         sys.exit(1)
 
 
-def cmd_cli(config: dict, args):
+def cmd_cli(config: dict, message: Optional[str] = None):
     """CLI 模式"""
     from adapters.cli import run_interactive, run_once
 
     agent = build_agent(config)
 
-    if args.interactive:
-        run_interactive(agent)
-    elif args.message:
-        run_once(agent, args.message)
+    if message:
+        run_once(agent, message)
     else:
-        print("请提供消息内容，或使用 --interactive 进入交互模式。")
-        print("示例：python main.py cli '你好，我叫小明'")
-        sys.exit(1)
+        run_interactive(agent)
 
 
 def cmd_webui(config: dict, args):
@@ -99,41 +109,38 @@ def cmd_webui(config: dict, args):
     port = webui_cfg.get("port", 8000)
 
     def agent_factory(provider: str):
-        return build_agent(config, provider_override=provider)
+        webui_rules = config.get("webui", {}).get("extra_rules") or []
+        merged_config = {
+            **config,
+            "agent": {
+                **(config.get("agent") or {}),
+                "extra_rules": [
+                    *((config.get("agent") or {}).get("extra_rules") or []),
+                    *webui_rules,
+                ],
+            },
+        }
+        return build_agent(merged_config, provider_override=provider)
 
-    app = create_app(agent_factory)
-    print(f"Mini Agent WebUI 启动中：http://{host}:{port}")
+    workspace_dir = config.get("workspace", {}).get("dir", "./workspace")
+    app = create_app(agent_factory, workspace_dir=workspace_dir)
+    print(f"czon Agent WebUI 启动中：http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
+def _render_rule(rule, workspace_dir: str) -> str:
+    return str(rule).replace("{workspace_dir}", workspace_dir.rstrip("/"))
+
+
 def main():
-    # 检查并自动初始化 sample.db
-    if not Path("data/sample.db").exists() and Path("data/seed_sample_db.py").exists():
-        import subprocess
-        subprocess.run([sys.executable, "data/seed_sample_db.py"], capture_output=True)
-
     parser = argparse.ArgumentParser(
-        prog="mini-agent",
-        description="Mini Agent — 极简 Python Agent Runtime",
+        prog="czon-agent",
+        description="czon Agent — 极简 Python Agent Runtime",
     )
-    subparsers = parser.add_subparsers(dest="command")
-
-    # setup 子命令
-    subparsers.add_parser("setup", help="初始化示例数据（sample.db）")
-
-    # cli 子命令
-    cli_parser = subparsers.add_parser("cli", help="命令行模式")
-    cli_parser.add_argument("message", nargs="?", help="要发送的消息（不填则需要 --interactive）")
-    cli_parser.add_argument("--interactive", "-i", action="store_true", help="进入交互式 REPL")
-
-    # webui 子命令
-    subparsers.add_parser("webui", help="启动 Web UI（默认）")
+    parser.add_argument("command_or_message", nargs="?", help="webui / setup / 或直接输入消息")
+    parser.add_argument("message_parts", nargs=argparse.REMAINDER, help="消息剩余内容")
 
     args = parser.parse_args()
-
-    # 未指定子命令时默认启动 webui
-    if not args.command:
-        args.command = "webui"
 
     # 初始化日志
     from core.logging_setup import setup_logging
@@ -143,14 +150,16 @@ def main():
 
     config = load_config()
 
-    if args.command == "setup":
+    command = args.command_or_message
+    if command == "setup":
         cmd_setup(config)
-    elif args.command == "cli":
-        cmd_cli(config, args)
-    elif args.command == "webui":
+    elif command == "webui":
         cmd_webui(config, args)
+    elif command:
+        message = " ".join([command] + args.message_parts).strip()
+        cmd_cli(config, message=message)
     else:
-        parser.print_help()
+        cmd_cli(config)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,13 @@ from rich.logging import RichHandler
 
 
 def setup_logging(log_dir: str = "logs", level: int = logging.INFO) -> None:
+    root = logging.getLogger()
+    root.setLevel(level)
+    if getattr(root, "_czon_logging_configured", False):
+        for handler in root.handlers:
+            handler.setLevel(level)
+        return
+
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
@@ -35,7 +42,6 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO) -> None:
     )
     rich_handler.setLevel(level)
 
-    root = logging.getLogger()
-    root.setLevel(level)
     root.addHandler(file_handler)
     root.addHandler(rich_handler)
+    root._czon_logging_configured = True
