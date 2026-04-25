@@ -1,0 +1,24 @@
+# 环境配置
+.env
+
+# 运行时目录内容
+uploads/*
+logs/*
+data/sample.db
+!uploads/.gitkeep
+!logs/.gitkeep
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp

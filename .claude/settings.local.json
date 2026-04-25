@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/python3 data/seed_sample_db.py)",
+      "Bash(.venv/bin/python3 skills/sqlite-sample/scripts/query.py --sql \"SELECT name, department, salary FROM employees ORDER BY salary DESC LIMIT 3\")",
+      "Bash(.venv/bin/python3 --version)",
+      "Bash(.venv/bin/python3 main.py cli \"你好，我叫小明\")",
+      "Bash(.venv/bin/python3 main.py cli \"查询薪资最高的3个员工\")",
+      "Bash(timeout 5 .venv/bin/python3 main.py webui)",
+      "Bash(nohup .venv/bin/python3 main.py webui)",
+      "Bash(curl -s http://127.0.0.1:8000/api/providers)",
+      "Bash(.venv/bin/python3 main.py webui)",
+      "Bash(pkill -f \"main.py webui\")",
+      "Bash(netstat -tuln)",
+      "Bash(curl -s http://127.0.0.1:8000/)",
+      "Bash(curl -s -X POST http://127.0.0.1:8000/api/chat -H 'Content-Type: application/json' -d '{\"text\": \"你好\", \"image_paths\": [], \"provider\": \"kimi\"}')"
+    ]
+  }
+}

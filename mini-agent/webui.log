@@ -1,0 +1,39 @@
+Mini Agent WebUI 启动中：http://127.0.0.1:8000
+[04/18/26 09:13:12] INFO     收到 /api/chat 请求：provider=kimi, text=你好      
+                    INFO     LLM 初始化：provider=kimi, model=moonshot-v1-128k  
+                    INFO     已加载 skill：hello-world                          
+                    INFO     已加载 skill：sqlite-sample                        
+                    INFO     Agent 开始处理请求：你好...                        
+                    INFO     第 1 轮 LLM 调用                                   
+[04/18/26 09:13:16] INFO     HTTP Request: POST                                 
+                             https://api.moonshot.cn/v1/chat/completions        
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     执行工具：activate_skill，参数：{'name':           
+                             'hello-world'}                                     
+                    INFO     Skill 'hello-world' 已激活，正文长度 502           
+                    INFO     工具 activate_skill 执行完成，输出长度：502        
+                    INFO     第 2 轮 LLM 调用                                   
+[04/18/26 09:13:19] INFO     HTTP Request: POST                                 
+                             https://api.moonshot.cn/v1/chat/completions        
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     执行工具：bash，参数：{'command': "python          
+                             skills/hello-world/scripts/hello.py '朋友'",       
+                             'timeout': 130}                                    
+                    INFO     执行 bash 命令：python                             
+                             skills/hello-world/scripts/hello.py '朋友'         
+                    INFO     工具 bash 执行完成，输出长度：68                   
+                    INFO     第 3 轮 LLM 调用                                   
+[04/18/26 09:13:21] INFO     HTTP Request: POST                                 
+                             https://api.moonshot.cn/v1/chat/completions        
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     执行工具：bash，参数：{'command': "python3         
+                             skills/hello-world/scripts/hello.py '朋友'",       
+                             'timeout': 130}                                    
+                    INFO     执行 bash 命令：python3                            
+                             skills/hello-world/scripts/hello.py '朋友'         
+                    INFO     工具 bash 执行完成，输出长度：56                   
+                    INFO     第 4 轮 LLM 调用                                   
+[04/18/26 09:13:22] INFO     HTTP Request: POST                                 
+                             https://api.moonshot.cn/v1/chat/completions        
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     Agent 完成，共 4 轮，回复长度 24                   
