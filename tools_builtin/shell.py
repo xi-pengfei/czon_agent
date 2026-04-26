@@ -3,15 +3,22 @@
 """
 import logging
 import subprocess
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT = 10_000
 
+# 项目根目录：tools_builtin/ 的上一级，与项目名称无关
+_ROOT_DIR = Path(__file__).resolve().parent.parent
+
 
 def run_bash(command: str, timeout: int = 60) -> dict:
     """
     执行 shell 命令，返回结构化结果。
+    bash 进程始终以项目根目录作为工作目录启动，
+    skill 脚本可直接使用相对路径（如 skills/xxx/scripts/xxx.py），
+    命令内部的 cd 仍可自由切换到任意目录。
     """
     logger.info(f"执行 bash 命令：{command[:200]}")
     try:
@@ -23,6 +30,7 @@ def run_bash(command: str, timeout: int = 60) -> dict:
             text=True,
             encoding="utf-8",
             errors="replace",
+            cwd=_ROOT_DIR,   # 确保 bash 始终从项目根目录启动
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""

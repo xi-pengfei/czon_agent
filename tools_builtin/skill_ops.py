@@ -2,8 +2,12 @@
 内置工具：activate_skill（按需加载 skill 详情）
 """
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 项目根目录：tools_builtin/ 的上一级，与项目名称无关
+_ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
 def make_activate_skill(skill_loader):
@@ -11,13 +15,16 @@ def make_activate_skill(skill_loader):
 
     def activate_skill(name: str) -> str:
         """
-        加载指定 skill 的完整 SKILL.md 正文。
+        加载指定 skill 的完整 SKILL.md 正文，并在开头注入项目根目录路径。
+        LLM 读到此路径后无需猜测，可直接用于构造 bash 命令。
         找不到时返回错误字符串 + 可用列表。
         """
         try:
             body = skill_loader.load_body(name)
             logger.info(f"Skill '{name}' 已激活，正文长度 {len(body)}")
-            return body
+            # 动态注入根目录，LLM 直接使用，无需猜测路径
+            header = f"[Project root: {_ROOT_DIR}]\n\n"
+            return header + body
         except KeyError:
             available = ", ".join(skill_loader.catalog.keys()) or "（无）"
             return f"[error] skill '{name}' 不存在。可用 skill：{available}"
