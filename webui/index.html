@@ -7,65 +7,115 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .msg-user  { background: #f4f4f5; }
-    .msg-agent { background: #ffffff; border: 1px solid #e4e4e7; }
-    .tool-row  { background: #fafafa; border-left: 3px solid #6366f1; }
-    .tool-detail { display: none; white-space: pre-wrap; word-break: break-all; }
+
+    /* 消息气泡 */
+    .msg-user  { background: linear-gradient(135deg, #e8f0fe 0%, #dce8fb 100%);
+                 border-radius: 16px 16px 4px 16px; color: #1e3a5f; }
+    .msg-agent { background: #ffffff; border: 0.5px solid #e8edf5;
+                 border-radius: 16px 16px 16px 4px;
+                 box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+
+    /* Tool 行 */
+    .tool-row        { display: flex; align-items: flex-start; gap: 7px;
+                       background: #f5f9ff; border: 0.5px solid #dce8f8;
+                       border-radius: 6px; padding: 5px 10px; }
+    .tool-row-dot    { width: 6px; height: 6px; border-radius: 50%; background: #3b7dd8;
+                       flex-shrink: 0; margin-top: 3px; }
+    .tool-row-dot.ok { background: #2ea06b; }
+    .tool-row-dot.err{ background: #e03e3e; }
+    .tool-row-dot.warn{ background: #d97706; }
+    .tool-row-body   { flex: 1; min-width: 0; }
+    .tool-row.confirm-row { background: #fffbeb; border-color: #fcd34d; }
+    .tool-row.error-row   { background: #fff5f5; border-color: #fca5a5; }
+
+    .tool-detail { display: none; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
     .tool-detail.open { display: block; }
-    #chat-box::-webkit-scrollbar { width: 6px; }
-    #chat-box::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 3px; }
-    textarea:focus { outline: none; box-shadow: 0 0 0 2px #6366f1; }
+
+    /* 输入区包裹容器 */
+    .input-wrap { display: flex; align-items: flex-end; gap: 0;
+                  background: #f4f8fd; border: 0.5px solid #dde6f2;
+                  border-radius: 12px; padding: 6px 8px; }
+    .input-wrap:focus-within { border-color: #3b7dd8;
+                                box-shadow: 0 0 0 2px rgba(59,125,216,.12); }
+    #input-text { flex: 1; border: none; background: transparent;
+                  padding: 4px 8px; resize: none; outline: none; }
+
+    /* 滚动条 */
+    #chat-box::-webkit-scrollbar { width: 5px; }
+    #chat-box::-webkit-scrollbar-thumb { background: #dce6f2; border-radius: 3px; }
+
+    /* 加载动画 */
     .spinner { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    /* 思考中三点 */
+    .thinking-dots span { display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+                          background: #93b4d8; margin: 0 2px; vertical-align: middle;
+                          animation: blink 1.2s ease-in-out infinite; }
+    .thinking-dots span:nth-child(2) { animation-delay: .2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%,80%,100% { opacity:.25; transform:scale(.8); }
+                       40% { opacity:1; transform:scale(1.1); } }
   </style>
 </head>
 <body class="bg-gray-50 h-screen flex flex-col">
 
   <!-- 顶部栏 -->
-  <header class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between flex-shrink-0">
-    <span class="font-semibold text-gray-800 tracking-tight">czon_agent</span>
+  <header class="bg-white border-b flex items-center justify-between flex-shrink-0 px-5" style="height:48px;border-color:#eef2f7;">
+    <div class="flex items-center gap-2">
+      <div style="width:5px;height:20px;background:#3b7dd8;border-radius:2px;flex-shrink:0;"></div>
+      <span class="font-semibold tracking-tight" style="color:#0f172a;font-size:14px;">czon_agent</span>
+      <span style="font-size:9px;font-weight:500;background:#eff6ff;color:#3b82f6;border-radius:3px;padding:2px 6px;letter-spacing:.06em;">BETA</span>
+    </div>
     <div class="flex items-center gap-2">
       <button id="new-chat-btn"
-        class="text-sm border border-gray-200 rounded-md px-2 py-1 bg-white text-gray-600 hover:border-indigo-400 hover:text-indigo-600">
+        class="text-xs rounded-md px-3 py-1 transition-colors"
+        style="border:0.5px solid #dce6f5;color:#3b7dd8;background:#f5f9ff;">
         新对话
       </button>
-      <span class="text-sm text-gray-500">模型:</span>
       <select id="provider-select"
-        class="text-sm border border-gray-200 rounded-md px-2 py-1 bg-white text-gray-700 cursor-pointer hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        class="text-xs rounded-md px-2 py-1 cursor-pointer"
+        style="border:0.5px solid #dde6f2;color:#374151;background:#fff;">
       </select>
     </div>
   </header>
 
   <!-- 对话区域 -->
-  <main id="chat-box" class="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-    <div id="empty-hint" class="text-center text-gray-400 text-sm mt-16">
-      发送消息开始对话
+  <main id="chat-box" class="flex-1 overflow-y-auto px-4 py-6 space-y-4" style="background:#f8fafd;">
+    <div id="empty-hint" class="flex flex-col items-center justify-center mt-20 gap-3">
+      <div style="width:36px;height:36px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3b7dd8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      <span style="font-size:13px;color:#94a3b8;">发送消息开始对话</span>
     </div>
   </main>
 
   <!-- 底部输入区 -->
-  <footer class="bg-white border-t border-gray-200 px-4 py-3 flex-shrink-0">
+  <footer class="bg-white flex-shrink-0 px-4 py-3" style="border-top:0.5px solid #eef2f7;">
     <!-- 已选文件预览 -->
     <div id="file-preview" class="flex flex-wrap gap-2 mb-2 hidden"></div>
-    <div class="flex items-end gap-2">
+    <!-- 统一包裹容器 -->
+    <div class="input-wrap">
+      <input id="file-input" type="file" multiple class="hidden" />
       <!-- 上传按钮 -->
       <label for="file-input" title="上传文件"
-        class="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-400 cursor-pointer transition-colors">
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        class="flex-shrink-0 flex items-center justify-center cursor-pointer transition-colors"
+        style="width:28px;height:28px;border-radius:7px;color:#94a3b8;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
             d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
         </svg>
       </label>
-      <input id="file-input" type="file" multiple class="hidden" />
-
       <!-- 文本输入 -->
       <textarea id="input-text" rows="1"
         placeholder="输入内容… (Enter 发送，Shift+Enter 换行)"
-        class="flex-1 resize-none rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 transition-all max-h-40 overflow-y-auto"></textarea>
-
+        class="text-sm text-gray-800 placeholder-gray-400 max-h-40 overflow-y-auto"></textarea>
       <!-- 发送按钮 -->
       <button id="send-btn"
-        class="flex-shrink-0 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+        class="flex-shrink-0 text-white text-xs font-medium active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        style="background:#3b7dd8;border:none;border-radius:8px;padding:6px 14px;height:30px;white-space:nowrap;">
         发送
       </button>
     </div>
@@ -429,7 +479,7 @@ function appendUserMessage(text, attachments) {
   const wrap = document.createElement('div');
   wrap.className = 'flex justify-end';
   const bubble = document.createElement('div');
-  bubble.className = 'msg-user rounded-2xl px-4 py-3 max-w-lg text-sm text-gray-800 whitespace-pre-wrap';
+  bubble.className = 'msg-user px-4 py-3 max-w-lg text-sm whitespace-pre-wrap';
   bubble.textContent = text;
   if (attachments.length) {
     const files = document.createElement('div');
@@ -446,12 +496,12 @@ function appendAgentPlaceholder(id) {
   const box = document.getElementById('chat-box');
   const wrap = document.createElement('div');
   wrap.id = id;
-  wrap.className = 'flex justify-start';
-  wrap.innerHTML = `<div class="msg-agent rounded-2xl px-4 py-3 max-w-2xl text-sm text-gray-500 italic">
-    <svg class="w-4 h-4 spinner inline mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-    </svg>思考中…</div>`;
+  wrap.className = 'flex justify-start items-end gap-2';
+  wrap.innerHTML = `
+    <div style="width:26px;height:26px;border-radius:50%;background:#3b7dd8;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;margin-bottom:2px;">C</div>
+    <div class="msg-agent px-4 py-3 max-w-2xl text-sm">
+      <div class="thinking-dots"><span></span><span></span><span></span></div>
+    </div>`;
   box.appendChild(wrap);
   box.scrollTop = box.scrollHeight;
 }
@@ -460,12 +510,17 @@ function updateAgentMessage(id, reply, steps, error) {
   const wrap = document.getElementById(id);
   if (!wrap) return;
 
+  // 确保 wrap 保持头像+气泡的横排布局
+  wrap.className = 'flex justify-start items-end gap-2';
+
   if (!error) {
     messageStates.set(id, { reply, steps: steps || [] });
   }
 
   if (error) {
-    wrap.innerHTML = `<div class="msg-agent rounded-2xl px-4 py-3 max-w-2xl text-sm text-red-600">${escHtml(error)}</div>`;
+    wrap.innerHTML = `
+      <div style="width:26px;height:26px;border-radius:50%;background:#e03e3e;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;margin-bottom:2px;">!</div>
+      <div class="msg-agent px-4 py-3 max-w-2xl text-sm" style="color:#dc2626;">${escHtml(error)}</div>`;
     document.getElementById('chat-box').scrollTop = 9999;
     return;
   }
@@ -476,36 +531,40 @@ function updateAgentMessage(id, reply, steps, error) {
   if (steps && steps.length) {
     html += '<div class="space-y-1 mb-3">';
     steps.forEach((s, i) => {
-      const argsStr = JSON.stringify(s.args).slice(0, 80);
+      const argsStr = JSON.stringify(s.args).slice(0, 100);
       const result = s.result || {};
-      const error = result.error;
-      const isConfirm = error && error.type === 'ConfirmationRequired';
-      const isError = error && error.type !== 'ConfirmationRequired';
+      const err = result.error;
+      const isConfirm = err && err.type === 'ConfirmationRequired';
+      const isError = err && err.type !== 'ConfirmationRequired';
+      const isDone = result.ok === true;
       const confirmation = result.meta && result.meta.confirmation;
       const confirmationId = confirmation && !confirmation.executed && confirmation.id;
-      const rowClass = isConfirm
-        ? 'bg-amber-50 border-l-3 border-amber-400 text-amber-700'
-        : isError
-          ? 'bg-red-50 border-l-3 border-red-400 text-red-700'
-          : 'tool-row text-indigo-700';
-      const icon = isConfirm ? '⚠️' : isError ? '✕' : '🔧';
+      const dotClass = isConfirm ? 'warn' : isError ? 'err' : isDone ? 'ok' : '';
+      const rowExtra = isConfirm ? ' confirm-row' : isError ? ' error-row' : '';
+      const nameColor = isConfirm ? '#b45309' : isError ? '#dc2626' : '#1d4ed8';
+      const argsColor = isConfirm ? '#92400e' : isError ? '#991b1b' : '#64a0d4';
       const detail = JSON.stringify(result, null, 2);
       const detailId = `detail-${id}-${i}`;
-      html += `<div class="${rowClass} rounded px-3 py-1.5 text-xs cursor-pointer select-none"
+      html += `<div class="tool-row${rowExtra} cursor-pointer select-none text-xs"
         onclick="document.getElementById('${detailId}').classList.toggle('open')">
-        ${icon} <strong>${escHtml(s.name)}</strong>(${escHtml(argsStr)}…)
-        <div id="${detailId}" class="tool-detail mt-1 text-gray-500 font-mono text-xs">${escHtml(detail)}</div>
-        ${confirmationId ? `<button class="mt-2 px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-700"
-          onclick="event.stopPropagation(); confirmTool('${escHtml(confirmationId)}', '${escHtml(id)}')">确认执行</button>` : ''}
+        <div class="tool-row-dot ${dotClass}" style="margin-top:4px;"></div>
+        <div class="tool-row-body">
+          <span style="font-weight:600;color:${nameColor};">${escHtml(s.name)}</span><span style="color:${argsColor};margin-left:4px;">${escHtml(argsStr)}…</span>
+          <div id="${detailId}" class="tool-detail font-mono text-gray-500" style="font-size:11px;">${escHtml(detail)}</div>
+          ${confirmationId ? `<button class="mt-2 px-2 py-1 text-xs rounded text-white"
+            style="background:#d97706;" onclick="event.stopPropagation(); confirmTool('${escHtml(confirmationId)}', '${escHtml(id)}')">确认执行</button>` : ''}
+        </div>
       </div>`;
     });
     html += '</div>';
   }
 
   // 最终回复：支持少量 Markdown 链接，主要用于下载文件
-  html += `<div class="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">${renderMessage(reply)}</div>`;
+  html += `<div class="text-sm whitespace-pre-wrap leading-relaxed" style="color:#1e293b;">${renderMessage(reply)}</div>`;
 
-  wrap.innerHTML = `<div class="msg-agent rounded-2xl px-4 py-3 max-w-2xl">${html}</div>`;
+  wrap.innerHTML = `
+    <div style="width:26px;height:26px;border-radius:50%;background:#3b7dd8;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;margin-bottom:2px;">C</div>
+    <div class="msg-agent px-4 py-3 max-w-2xl">${html}</div>`;
   document.getElementById('chat-box').scrollTop = 9999;
 }
 
@@ -528,7 +587,7 @@ function escHtml(str) {
 function renderMessage(text) {
   const escaped = escHtml(text);
   return escaped.replace(/\[([^\]\n]+)\]\((\/download\/[^)\s]+)\)/g, (_match, label, href) => {
-    return `<a href="${href}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100">${label}</a>`;
+    return `<a href="${href}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;padding:3px 10px;border-radius:6px;background:#eff6ff;color:#1d4ed8;border:0.5px solid #bfdbfe;font-size:12px;text-decoration:none;">${label}</a>`;
   });
 }
 
