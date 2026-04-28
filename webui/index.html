@@ -10,10 +10,12 @@
 
     /* 消息气泡 */
     .msg-user  { background: linear-gradient(135deg, #e8f0fe 0%, #dce8fb 100%);
-                 border-radius: 16px 16px 4px 16px; color: #1e3a5f; }
+                 border-radius: 16px 16px 4px 16px; color: #1e3a5f;
+                 font-size: 13px; }
     .msg-agent { background: #ffffff; border: 0.5px solid #e8edf5;
                  border-radius: 16px 16px 16px 4px;
-                 box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+                 box-shadow: 0 1px 4px rgba(0,0,0,.04);
+                 font-size: 13px; }
 
     /* Tool 行 */
     .tool-row        { display: flex; align-items: flex-start; gap: 7px;
@@ -31,14 +33,12 @@
     .tool-detail { display: none; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
     .tool-detail.open { display: block; }
 
-    /* 输入区包裹容器 */
-    .input-wrap { display: flex; align-items: flex-end; gap: 0;
-                  background: #f4f8fd; border: 0.5px solid #dde6f2;
-                  border-radius: 12px; padding: 6px 8px; }
-    .input-wrap:focus-within { border-color: #3b7dd8;
-                                box-shadow: 0 0 0 2px rgba(59,125,216,.12); }
+    /* 浮岛输入框 */
+    .input-wrap { display: flex; align-items: flex-end; gap: 8px;
+                  background: #ffffff; border-radius: 20px; padding: 8px 8px 8px 14px;
+                  box-shadow: 0 2px 16px rgba(59,125,216,.1), 0 1px 3px rgba(0,0,0,.05); }
     #input-text { flex: 1; border: none; background: transparent;
-                  padding: 4px 8px; resize: none; outline: none; }
+                  padding: 3px 0; font-size: 13px; resize: none; outline: none; }
 
     /* 滚动条 */
     #chat-box::-webkit-scrollbar { width: 5px; }
@@ -93,7 +93,7 @@
   </main>
 
   <!-- 底部输入区 -->
-  <footer class="bg-white flex-shrink-0 px-4 py-3" style="border-top:0.5px solid #eef2f7;">
+  <footer class="flex-shrink-0 px-4 py-3" style="background:#f8fafd;">
     <!-- 已选文件预览 -->
     <div id="file-preview" class="flex flex-wrap gap-2 mb-2 hidden"></div>
     <!-- 统一包裹容器 -->
@@ -114,9 +114,11 @@
         class="text-sm text-gray-800 placeholder-gray-400 max-h-40 overflow-y-auto"></textarea>
       <!-- 发送按钮 -->
       <button id="send-btn"
-        class="flex-shrink-0 text-white text-xs font-medium active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-        style="background:#3b7dd8;border:none;border-radius:8px;padding:6px 14px;height:30px;white-space:nowrap;">
-        发送
+        class="flex-shrink-0 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        style="background:#3b7dd8;border:none;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <svg width="15" height="15" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+          <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
       </button>
     </div>
   </footer>
@@ -247,7 +249,7 @@ async function sendMessage() {
   // 禁用发送
   const btn = document.getElementById('send-btn');
   btn.disabled = true;
-  btn.innerHTML = '<svg class="w-4 h-4 spinner inline" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
+  btn.innerHTML = '<svg class="spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
 
   // 占位 agent 消息
   const agentMsgId = 'agent-' + Date.now();
@@ -274,7 +276,7 @@ async function sendMessage() {
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = '发送';
+    btn.innerHTML = '<svg width="15" height="15" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
   }
 }
 
@@ -479,7 +481,8 @@ function appendUserMessage(text, attachments) {
   const wrap = document.createElement('div');
   wrap.className = 'flex justify-end';
   const bubble = document.createElement('div');
-  bubble.className = 'msg-user px-4 py-3 max-w-lg text-sm whitespace-pre-wrap';
+  bubble.className = 'msg-user max-w-lg whitespace-pre-wrap' ;
+  bubble.style.cssText = 'padding:7px 13px;';
   bubble.textContent = text;
   if (attachments.length) {
     const files = document.createElement('div');
@@ -499,7 +502,7 @@ function appendAgentPlaceholder(id) {
   wrap.className = 'flex justify-start items-end gap-2';
   wrap.innerHTML = `
     <div style="width:26px;height:26px;border-radius:50%;background:#3b7dd8;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;margin-bottom:2px;">C</div>
-    <div class="msg-agent px-4 py-3 max-w-2xl text-sm">
+    <div class="msg-agent max-w-2xl" style="padding:7px 13px;">
       <div class="thinking-dots"><span></span><span></span><span></span></div>
     </div>`;
   box.appendChild(wrap);
@@ -564,7 +567,7 @@ function updateAgentMessage(id, reply, steps, error) {
 
   wrap.innerHTML = `
     <div style="width:26px;height:26px;border-radius:50%;background:#3b7dd8;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;margin-bottom:2px;">C</div>
-    <div class="msg-agent px-4 py-3 max-w-2xl">${html}</div>`;
+    <div class="msg-agent max-w-2xl" style="padding:7px 13px;">${html}</div>`;
   document.getElementById('chat-box').scrollTop = 9999;
 }
 
