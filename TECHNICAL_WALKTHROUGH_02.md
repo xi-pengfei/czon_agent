@@ -39,20 +39,26 @@ czon_agent/
 ├── tools_builtin/
 │   ├── file_ops.py         # read / write
 │   ├── shell.py            # bash
-│   └── skill_ops.py        # activate_skill
+│   ├── skill_ops.py        # activate_skill
+│   └── vector_store.py     # vector_search / vector_list_collections（需 Qdrant）
 ├── adapters/
 │   ├── cli.py              # CLI 单次 / 交互模式
 │   └── server.py           # FastAPI、SSE、上传、下载、会话历史、确认
 ├── webui/
 │   └── index.html          # 单文件 WebUI
+├── scripts/
+│   └── install_qdrant.sh   # Qdrant 一键安装（本地二进制 + launchd 自启）
 ├── skills/
-│   ├── hello-world/        # 示例 Skill
-│   ├── sqlite-sample/      # 示例 SQLite 查询 Skill
-│   └── office-io/          # Word / Excel / PDF / PPT / Markdown 文档 Skill
-├── uploads/                # 用户上传输入
+│   ├── hello-world/        # skill 激活机制演示
+│   ├── sqlite-sample/      # SQLite 示例数据库查询
+│   ├── office-io/          # Word / Excel / PDF / PPT / Markdown 读写
+│   ├── vector-store/       # 向量知识库入库与管理（检索由 tools_builtin 承担）
+│   ├── dianxiaomi-export/  # 店小秘订单导出
+│   └── pledgebox-sync/     # Pledgebox 数据同步
+├── uploads/                # 用户上传输入（文件名为 UUID hash）
 ├── workspace/              # Agent 生成输出
 ├── logs/                   # 系统日志
-└── data/                   # 示例数据
+└── data/                   # 示例数据（sample.db 由 python main.py setup 生成）
 ```
 
 ### 目录语义
@@ -542,6 +548,20 @@ return {
 ### 6.3 `activate_skill`：`tools_builtin/skill_ops.py`
 
 这个工具按需加载 Skill 说明。
+
+### 6.4 `vector_search / vector_list_collections`：`tools_builtin/vector_store.py`
+
+面向语义检索场景（法律法规、案例、合同等知识库问答）的核心工具，随 Agent 启动自动注册，无需 skill 激活。
+
+```python
+# 列出所有向量库及文档数量
+vector_list_collections()
+
+# 在指定库中语义检索，返回 top-k 相关片段
+vector_search(query="违约责任", collection="law_regulations", top_k=5)
+```
+
+依赖本地 Qdrant 服务（`bash scripts/install_qdrant.sh` 一键安装）和 `QWEN_API_KEY`（用于 embedding）。文档入库和库管理由 `skills/vector-store/` 的脚本承担，运行时检索由此工具承担。
 
 模型看到 Skill catalog 后，如果判断需要某个 Skill，会调用：
 

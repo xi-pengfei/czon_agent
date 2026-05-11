@@ -23,6 +23,7 @@ workspace:
 agent:
   max_iterations: 15
   extra_rules:
+    # 文件操作
     - "For ambiguous local file names, search likely locations first: current directory, workspace, uploads, and ~/Desktop."
     - "Use {workspace_dir}/ as the default output directory for generated files."
     - "Treat uploads/ as user-provided input files; do not write generated output there unless the user explicitly asks."
@@ -32,6 +33,11 @@ agent:
     - "Do not claim you can see prior conversation unless prior messages are actually present in the current context."
     - "For delete/remove requests, prefer moving files to ~/.Trash unless the user explicitly asks for permanent deletion."
     - "Never delete a bare filename such as 'aaa.txt' before locating its exact path."
+    # 知识库检索
+    - "When the user asks a legal or domain-knowledge question, first call vector_list_collections to see what knowledge bases are available, then call vector_search on the most relevant collection. Do not answer from general knowledge alone if a relevant knowledge base exists."
+    - "When presenting vector_search results, always cite the source_file so the user knows where the information came from."
+    - "When the user uploads a file and asks to store it into a knowledge base, activate the vector-store skill and follow its instructions. Only ingest into existing collections — never create or delete collections."
+    - "If the user asks to create or delete a knowledge base collection, refuse and explain that collection management is handled by the administrator."
 
 # 工具策略：默认放行，只保留少量高危 block 和必要确认
 tool_policy:

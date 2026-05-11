@@ -17,6 +17,7 @@
   EMBED_MODEL    embedding 模型名（默认 text-embedding-v3，维度 1024）
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -88,13 +89,28 @@ def embed_batch(texts: list, api_key: str) -> list:
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 
-def ensure_collection(name: str, dim: int):
-    """如果 collection 不存在则自动创建"""
+def ensure_collection(name: str) -> dict:
+    """确认 collection 存在；不存在则报错，不自动创建（建库是管理员职责）"""
     r = requests.get(f"{QDRANT_URL}/collections/{name}", timeout=10)
     if r.status_code == 404:
-        body = {"vectors": {"size": dim, "distance": "Cosine"}}
-        resp = requests.put(f"{QDRANT_URL}/collections/{name}", json=body, timeout=10)
-        resp.raise_for_status()
+        raise RuntimeError(
+            f"知识库 '{name}' 不存在，请联系管理员执行：\n"
+            f"  python skills/vector-store/scripts/manage.py create --collection {name} --dim 1024\n"
+            f"并在 skills/vector-store/SKILL.md 和 config.yaml 中补充该库的说明。"
+        )
+    r.raise_for_status()
+    return r.json().get("result", {})
+
+
+def collection_vector_size(info: dict):
+    vectors = (info.get("config") or {}).get("params", {}).get("vectors")
+    if isinstance(vectors, dict) and "size" in vectors:
+        return vectors.get("size")
+    if isinstance(vectors, dict):
+        for value in vectors.values():
+            if isinstance(value, dict) and "size" in value:
+                return value.get("size")
+    return None
 
 
 def upsert_points(collection: str, points: list):
@@ -135,6 +151,13 @@ def main():
     chunks = chunk_text(text, args.mode)
     print(f"[INFO] 切片完成，共 {len(chunks)} 块", file=sys.stderr)
 
+    # 先确认 collection 存在，避免库名错误时仍调用 embedding API
+    try:
+        collection_info = ensure_collection(args.collection)
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        sys.exit(1)
+
     # Embedding
     try:
         vectors = embed_batch(chunks, api_key)
@@ -144,22 +167,57 @@ def main():
 
     dim = len(vectors[0])
 
-    # 确保 collection 存在
-    try:
-        ensure_collection(args.collection, dim)
-    except Exception as e:
-        print(json.dumps({"ok": False, "error": f"创建 collection 失败：{e}"}, ensure_ascii=False))
+    expected_dim = collection_vector_size(collection_info)
+    if expected_dim and expected_dim != dim:
+        print(json.dumps({
+            "ok": False,
+            "error": f"Embedding 维度 {dim} 与 collection 维度 {expected_dim} 不一致，请检查 EMBED_MODEL 或重新建库",
+        }, ensure_ascii=False))
         sys.exit(1)
 
-    # 构造 points
-    source_name = Path(args.file).name
+    # 计算源文件 metadata（先算 hash，再决定归档路径）
+    src = Path(args.file).resolve()
+    source_hash = hashlib.md5(src.read_bytes()).hexdigest()
+
+    # 把原始文件归档到 workspace/vector-docs/<collection>/ 下统一管理
+    # 同名但内容不同时，在文件名中嵌入 hash 前8位，避免覆盖旧内容
+    root = Path(__file__).resolve().parents[3]
+    archive_dir = root / "workspace" / "vector-docs" / args.collection
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = archive_dir / src.name
+    if not existing.exists():
+        dest = existing
+    else:
+        existing_hash = hashlib.md5(existing.read_bytes()).hexdigest()
+        if existing_hash == source_hash:
+            dest = existing  # 完全相同，复用
+            print(f"[INFO] 原始文件内容相同，复用归档 {dest}", file=sys.stderr)
+        else:
+            # 同名不同内容：归档为 filename.<hash8>.ext
+            stem, suffix = src.stem, src.suffix
+            dest = archive_dir / f"{stem}.{source_hash[:8]}{suffix}"
+            print(f"[INFO] 同名文件内容不同，归档为新文件 {dest}", file=sys.stderr)
+
+    if not dest.exists():
+        import shutil
+        shutil.copy2(str(src), str(dest))
+        print(f"[INFO] 原始文件已归档至 {dest}", file=sys.stderr)
+
+    source_path = str(dest)          # 指向归档位置，而非上传临时路径
+    source_file = src.name           # 原始文件名（展示用）
+    # source_hash 已在归档阶段计算，此处复用
+
+    # 构造 points，每个 chunk 都携带完整的来源 metadata
     points = [
         {
-            "id": str(uuid.uuid4()),
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{args.collection}:{source_hash}:{i}")),
             "vector": vector,
             "payload": {
                 "content": chunk,
-                "source_file": source_name,
+                "source_file": source_file,    # 文件名（展示用）
+                "source_path": source_path,    # 完整路径（定位用）
+                "source_hash": source_hash,    # 文件 MD5（可靠删除/更新用）
                 "chunk_index": i,
                 "category": args.category,
             },
@@ -175,7 +233,13 @@ def main():
         sys.exit(1)
 
     print(json.dumps(
-        {"ok": True, "chunks_stored": len(chunks), "collection": args.collection, "source": source_name},
+        {
+            "ok": True,
+            "chunks_stored": len(chunks),
+            "collection": args.collection,
+            "source_file": source_file,
+            "source_hash": source_hash,
+        },
         ensure_ascii=False,
     ))
 
