@@ -46,14 +46,14 @@ python main.py "帮我列出 workspace 下的文件"
 向量检索是核心能力，支持法规/案例/合同的语义问答。首次部署需要额外两步：
 
 ```bash
-# 安装 Qdrant 本地向量数据库（一键安装，开机自启，数据存 ~/data/qdrant/）
+# macOS：安装 Qdrant 本地向量数据库二进制（下载安装到 .runtime/qdrant/）
 bash scripts/install_qdrant.sh
 
 # 在 .env 中补充 embedding 所需的 key
 QWEN_API_KEY=sk-xxx
 ```
 
-安装后重启 Agent 即可使用。建库、入库、检索的完整流程见下文"[向量知识库](#向量知识库rag完整使用流程)"章节。
+安装后重启 Agent 即可使用。之后 `python main.py webui`、交互 CLI、单次 CLI 都会自动确保 Qdrant 在线，Qdrant 数据存于 `data/qdrant/`。建库、入库、检索、备份恢复的完整流程见下文"[向量知识库](#向量知识库rag完整使用流程)"章节。
 
 ### 5. 可选：初始化示例数据库
 
@@ -72,7 +72,8 @@ czon_agent/
 ├── adapters/         # CLI 和 FastAPI WebUI 适配器
 ├── webui/            # 单文件前端 index.html
 ├── scripts/          # 运维脚本（install_qdrant.sh 等）
-├── data/             # 示例数据（sample.db，由 python main.py setup 生成）
+├── data/             # 示例数据与本地数据库（sample.db / qdrant，均不进 Git）
+├── .runtime/         # 项目本地运行依赖（Qdrant 二进制，不进 Git）
 ├── uploads/          # 用户上传文件输入区（文件名为 hash，WebUI 自动管理）
 ├── workspace/        # Agent 默认文件输出目录
 ├── logs/             # 运行日志
@@ -347,7 +348,9 @@ description: 一句话说明这个 skill 什么时候应该被使用。
                ↓ 检索时自动调用
          vector_search（tools_builtin，常驻内存）
                ↓
-         Qdrant（本地进程，~/data/qdrant/，开机自启）
+         Qdrant（Agent 自动拉起 .runtime/qdrant/bin/qdrant）
+               ↓
+         data/qdrant/（collection 与向量数据）
                ↑ 入库时由 skill 脚本执行
          ingest.py（skills/vector-store/scripts/）
 ```
@@ -358,7 +361,46 @@ description: 一句话说明这个 skill 什么时候应该被使用。
 
 `config.yaml` 的规则是通用的（"先调 list 看有哪些库，再搜最相关的"），新建库后不需要改它。
 
-> 首次部署步骤见快速开始第4步（安装 Qdrant + 配置 QWEN_API_KEY）。日常只需 `python main.py webui`，Qdrant 已在后台自动运行。
+> 首次部署步骤见快速开始第4步（安装 Qdrant + 配置 QWEN_API_KEY）。日常只需启动 Agent；如果 Qdrant 未运行，Agent 会自动从 `.runtime/qdrant/bin/qdrant` 拉起本地进程，并把数据写入 `data/qdrant/`。
+
+#### 安装、日常启动与备份
+
+`scripts/install_qdrant.sh` 只在首次部署或更新 Qdrant 二进制时执行。它不是日常重启命令，也不会清空已有向量数据。当前脚本面向 macOS，会根据当前机器架构下载 Qdrant，并放到项目本地：
+
+```text
+.runtime/qdrant/bin/qdrant
+```
+
+`.runtime/` 是可重新生成的运行依赖，不提交到 Git，也不需要备份。日常启动只需要：
+
+```bash
+python main.py webui
+```
+
+Agent 会检查 `http://localhost:6333/healthz`；如果 Qdrant 没运行，就自动从 `.runtime/qdrant/bin/qdrant` 启动，并使用项目内数据目录：
+
+```text
+data/qdrant/
+```
+
+真正需要备份的是 `data/qdrant/`，这里保存 collection、向量和 payload。GitHub 只保存源码，不保存 `.runtime/` 和 `data/qdrant/`。
+
+Windows/Linux 也可以使用同样的项目约束：把对应系统的 Qdrant 可执行文件放到项目内，或修改 `config.yaml` 里的 `qdrant.bin` 指向实际路径；`qdrant.data_dir` 仍应指向项目内的 `data/qdrant/`。这样 Agent 启动、备份、恢复的逻辑保持一致。
+
+换电脑或重装系统时，恢复顺序是：
+
+```bash
+git clone <repo>
+cd czon_agent
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+bash scripts/install_qdrant.sh
+# 然后把备份的 data/qdrant/ 恢复到项目同名目录
+python main.py webui
+```
+
+如果没有备份 `data/qdrant/`，重新 clone 后可以恢复代码，但不能恢复原来的知识库内容。
 
 #### 新建知识库（管理员，三步缺一不可）
 

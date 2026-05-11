@@ -19,6 +19,13 @@ skills:
 workspace:
   dir: ./workspace
 
+# 本地向量数据库：Agent 启动时自动确保 Qdrant 在线
+qdrant:
+  auto_start: true
+  url: http://localhost:6333
+  bin: ./.runtime/qdrant/bin/qdrant
+  data_dir: ./data/qdrant
+
 # Agent 配置
 agent:
   max_iterations: 15

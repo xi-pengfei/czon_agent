@@ -9,7 +9,10 @@ czon Agent 统一入口
   python main.py setup                 # 初始化示例数据（sample.db）
 """
 import argparse
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +43,8 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     # 如果有 provider 覆盖（WebUI 切换模型用）
     if provider_override:
         config = {**config, "active_provider": provider_override}
+
+    ensure_qdrant_running(config)
 
     llm = make_llm_from_config(config)
 
@@ -86,6 +91,57 @@ def cmd_setup(config: dict):
     if result.returncode != 0:
         print(result.stderr)
         sys.exit(1)
+
+
+def ensure_qdrant_running(config: dict):
+    qdrant_cfg = config.get("qdrant") or {}
+    if not qdrant_cfg.get("auto_start", True):
+        return
+
+    url = str(qdrant_cfg.get("url", "http://localhost:6333")).rstrip("/")
+    if _qdrant_healthy(url):
+        return
+
+    bin_path = Path(os.path.expanduser(str(qdrant_cfg.get("bin", "./.runtime/qdrant/bin/qdrant"))))
+    if not bin_path.is_absolute():
+        bin_path = Path.cwd() / bin_path
+    bin_path = bin_path.resolve()
+    if not bin_path.exists():
+        print(f"[警告] Qdrant 未运行，且未找到可执行文件：{bin_path}")
+        print("       请先运行：bash scripts/install_qdrant.sh")
+        return
+
+    data_dir = Path(str(qdrant_cfg.get("data_dir", "./data/qdrant"))).expanduser()
+    if not data_dir.is_absolute():
+        data_dir = Path.cwd() / data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = data_dir / "qdrant.log"
+    log_file = open(log_path, "ab")
+    subprocess.Popen(
+        [str(bin_path)],
+        cwd=str(data_dir),
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    for _ in range(20):
+        if _qdrant_healthy(url):
+            print(f"[Qdrant] 已启动：{url}，数据目录：{data_dir}")
+            return
+        time.sleep(0.5)
+
+    print(f"[警告] Qdrant 启动后健康检查未通过，日志：{log_path}")
+
+
+def _qdrant_healthy(url: str) -> bool:
+    try:
+        import requests
+        response = requests.get(f"{url}/healthz", timeout=1)
+        return response.ok and "passed" in response.text.lower()
+    except Exception:
+        return False
 
 
 def cmd_cli(config: dict, message: Optional[str] = None):

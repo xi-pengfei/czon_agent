@@ -47,7 +47,7 @@ czon_agent/
 ├── webui/
 │   └── index.html          # 单文件 WebUI
 ├── scripts/
-│   └── install_qdrant.sh   # Qdrant 一键安装（本地二进制 + launchd 自启）
+│   └── install_qdrant.sh   # Qdrant 一键安装（项目本地二进制）
 ├── skills/
 │   ├── hello-world/        # skill 激活机制演示
 │   ├── sqlite-sample/      # SQLite 示例数据库查询
@@ -561,7 +561,7 @@ vector_list_collections()
 vector_search(query="违约责任", collection="law_regulations", top_k=5)
 ```
 
-依赖本地 Qdrant 服务（`bash scripts/install_qdrant.sh` 一键安装）和 `QWEN_API_KEY`（用于 embedding）。文档入库和库管理由 `skills/vector-store/` 的脚本承担，运行时检索由此工具承担。
+依赖本地 Qdrant 进程和 `QWEN_API_KEY`（用于 embedding）。macOS 首次部署可用 `bash scripts/install_qdrant.sh` 下载项目本地二进制；之后 Agent 启动时会自动拉起 Qdrant，并使用 `data/qdrant/` 作为数据目录。文档入库和库管理由 `skills/vector-store/` 的脚本承担，运行时检索由此工具承担。
 
 模型看到 Skill catalog 后，如果判断需要某个 Skill，会调用：
 

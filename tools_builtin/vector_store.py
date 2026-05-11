@@ -4,9 +4,10 @@
 注册进 ToolRegistry，LLM 直接 function call，无需 skill 激活。
 只负责检索和发现；文档入库、库管理通过 skills/vector-store/scripts/ 脚本执行。
 
-Qdrant 需单独安装并运行（见 scripts/install_qdrant.sh）：
-  bash scripts/install_qdrant.sh   # 一键安装，开机自启
-  数据目录：~/data/qdrant/
+Qdrant 首次使用前需安装项目本地二进制（见 scripts/install_qdrant.sh）：
+  bash scripts/install_qdrant.sh
+  二进制目录：.runtime/qdrant/bin/qdrant
+  数据目录：data/qdrant/
 
 环境变量：
   QWEN_API_KEY    DashScope API Key（vector_search 必填）

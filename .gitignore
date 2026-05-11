@@ -6,6 +6,8 @@
 uploads/*
 logs/*
 data/sample.db
+data/qdrant/
+.runtime/
 workspace/*
 *.db
 webui.log
@@ -26,4 +28,5 @@ build/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
