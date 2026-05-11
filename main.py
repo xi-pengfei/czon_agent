@@ -35,7 +35,7 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     from core.llm import make_llm_from_config
     from core.skills import SkillLoader
     from core.tools import ToolPolicy, ToolRegistry
-    from tools_builtin import file_ops, shell, skill_ops
+    from tools_builtin import file_ops, shell, skill_ops, vector_store
 
     # 如果有 provider 覆盖（WebUI 切换模型用）
     if provider_override:
@@ -57,6 +57,7 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     file_ops.register(registry, workspace_dir=workspace_dir)
     shell.register(registry)
     skill_ops.register(registry, skill_loader)
+    vector_store.register(registry)
 
     agent_cfg = config.get("agent", {})
     max_iter = agent_cfg.get("max_iterations", 15)
