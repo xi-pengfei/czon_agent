@@ -228,7 +228,10 @@ Rules:
                 reasoning_parts.append(reasoning_text)
 
             for tc in getattr(delta, "tool_calls", None) or []:
-                index = getattr(tc, "index", 0)
+                index = getattr(tc, "index", None)
+                if index is None:
+                    logger.warning("流式 tool_call 缺少 index，回退到非流式调用以避免多工具参数合并")
+                    raise ValueError("stream tool_call missing index")
                 item = tool_call_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
                 tc_id = getattr(tc, "id", None)
                 if tc_id:

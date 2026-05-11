@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-v3")
 DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_OPENAI_CLIENTS = {}
+
+
+def get_embedding_client(api_key: str):
+    from openai import OpenAI
+
+    cache_key = (api_key, DASHSCOPE_BASE)
+    if cache_key not in _OPENAI_CLIENTS:
+        _OPENAI_CLIENTS[cache_key] = OpenAI(api_key=api_key, base_url=DASHSCOPE_BASE)
+    return _OPENAI_CLIENTS[cache_key]
 
 
 def vector_list_collections() -> dict:
@@ -61,11 +71,9 @@ def vector_search(query: str, collection: str, top_k: int = 5, category: str = "
     if not api_key:
         raise RuntimeError("缺少 QWEN_API_KEY 环境变量")
 
-    from openai import OpenAI
-
     # 1. Embed query
     try:
-        client = OpenAI(api_key=api_key, base_url=DASHSCOPE_BASE)
+        client = get_embedding_client(api_key)
         vector = client.embeddings.create(model=EMBED_MODEL, input=[query]).data[0].embedding
     except Exception as e:
         raise RuntimeError(f"Embedding 失败：{e}") from e
@@ -105,7 +113,7 @@ def register(registry):
             "用户问题涉及知识库但未指定库名时，先调此工具确认有哪些库，再调 vector_search。"
         ),
         parameters={"type": "object", "properties": {}, "required": []},
-        handler=lambda: vector_list_collections(),
+        handler=vector_list_collections,
     )
     registry.register(
         name="vector_search",
