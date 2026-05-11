@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 # 加载 .env
 load_dotenv()
 
+_qdrant_start_attempted = False
+
 
 def load_config() -> dict:
     config_path = Path("config.yaml")
@@ -43,8 +45,6 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     # 如果有 provider 覆盖（WebUI 切换模型用）
     if provider_override:
         config = {**config, "active_provider": provider_override}
-
-    ensure_qdrant_running(config)
 
     llm = make_llm_from_config(config)
 
@@ -94,12 +94,17 @@ def cmd_setup(config: dict):
 
 
 def ensure_qdrant_running(config: dict):
+    global _qdrant_start_attempted
+
     qdrant_cfg = config.get("qdrant") or {}
     if not qdrant_cfg.get("auto_start", True):
         return
 
     url = str(qdrant_cfg.get("url", "http://localhost:6333")).rstrip("/")
     if _qdrant_healthy(url):
+        return
+    if _qdrant_start_attempted:
+        print(f"[警告] Qdrant 仍未通过健康检查，已跳过重复启动：{url}")
         return
 
     bin_path = Path(os.path.expanduser(str(qdrant_cfg.get("bin", "./.runtime/qdrant/bin/qdrant"))))
@@ -118,13 +123,17 @@ def ensure_qdrant_running(config: dict):
 
     log_path = data_dir / "qdrant.log"
     log_file = open(log_path, "ab")
-    subprocess.Popen(
-        [str(bin_path)],
-        cwd=str(data_dir),
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    try:
+        subprocess.Popen(
+            [str(bin_path)],
+            cwd=str(data_dir),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        _qdrant_start_attempted = True
+    finally:
+        log_file.close()
 
     for _ in range(20):
         if _qdrant_healthy(url):
@@ -148,6 +157,7 @@ def cmd_cli(config: dict, message: Optional[str] = None):
     """CLI 模式"""
     from adapters.cli import run_interactive, run_once
 
+    ensure_qdrant_running(config)
     agent = build_agent(config)
 
     if message:
@@ -160,6 +170,8 @@ def cmd_webui(config: dict, args):
     """WebUI 模式"""
     import uvicorn
     from adapters.server import create_app
+
+    ensure_qdrant_running(config)
 
     webui_cfg = config.get("webui", {})
     host = webui_cfg.get("host", "127.0.0.1")

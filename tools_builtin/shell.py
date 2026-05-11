@@ -2,7 +2,6 @@
 内置工具：bash（执行 shell 命令）
 """
 import logging
-import re
 import subprocess
 from pathlib import Path
 
@@ -22,19 +21,6 @@ def run_bash(command: str, timeout: int = 60) -> dict:
     命令内部的 cd 仍可自由切换到任意目录。
     """
     logger.info(f"执行 bash 命令：{command[:200]}")
-    sqlite_block = _bare_sqlite_db_target(command)
-    if sqlite_block:
-        return {
-            "command": command,
-            "exit_code": 2,
-            "stdout": "",
-            "stderr": (
-                f"安全限制：禁止使用裸 SQLite 数据库路径 '{sqlite_block}'，"
-                "请使用明确目录路径，例如 data/sample.db，或通过 sqlite-sample skill 的 query.py 查询。"
-            ),
-            "timed_out": False,
-            "truncated": False,
-        }
     try:
         proc = subprocess.run(
             command,
@@ -84,17 +70,6 @@ def _truncate(text: str) -> tuple[str, bool]:
     if len(text) <= _MAX_OUTPUT:
         return text, False
     return text[:_MAX_OUTPUT] + f"\n\n[输出已截断，只显示前 {_MAX_OUTPUT} 字符]", True
-
-
-def _bare_sqlite_db_target(command: str) -> str | None:
-    """Block sqlite3 sample.db-style commands that create DB files in project root."""
-    pattern = r"(?:^|[;&|]\s*|\s)sqlite3\s+(?:-[^\s]+\s+)*(?P<quote>['\"]?)(?P<db>[^'\"\s;&|]+\.db)(?P=quote)"
-    for match in re.finditer(pattern, command):
-        db_path = match.group("db")
-        if db_path.startswith(("/", "~", "./", "../", "file:")) or "/" in db_path:
-            continue
-        return db_path
-    return None
 
 
 def register(registry):

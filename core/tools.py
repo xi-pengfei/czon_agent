@@ -4,6 +4,7 @@
 import logging
 import shlex
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Literal, Optional
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,16 @@ class ToolPolicy:
     def _check_bash(self, command: str) -> PolicyDecision:
         bash_cfg = self.config.get("bash") or {}
         lowered = command.lower()
+
+        bare_db = _bare_sqlite_db_target(command)
+        if bare_db:
+            return PolicyDecision.block(
+                reason=(
+                    f"禁止使用裸 SQLite 数据库路径 '{bare_db}'。"
+                    "请使用明确目录路径，例如 data/sample.db，或通过 sqlite-sample skill 的 query.py 查询。"
+                ),
+                matched="bare sqlite db path",
+            )
 
         if _looks_like_ambiguous_delete(command):
             return PolicyDecision.block(
@@ -313,3 +324,26 @@ def _looks_like_ambiguous_delete(command: str) -> bool:
             continue
         return True
     return False
+
+
+def _bare_sqlite_db_target(command: str) -> Optional[str]:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+
+    separators = {";", "&&", "||", "|"}
+    for index, part in enumerate(parts):
+        if Path(part).name != "sqlite3":
+            continue
+        for candidate in parts[index + 1:]:
+            if candidate in separators:
+                break
+            if candidate.startswith("-"):
+                continue
+            if not candidate.lower().endswith(".db"):
+                continue
+            if candidate.startswith(("/", "~", "./", "../", "file:")) or "/" in candidate:
+                continue
+            return candidate
+    return None

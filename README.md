@@ -365,7 +365,7 @@ description: 一句话说明这个 skill 什么时候应该被使用。
 
 #### 安装、日常启动与备份
 
-`scripts/install_qdrant.sh` 只在首次部署或更新 Qdrant 二进制时执行。它不是日常重启命令，也不会清空已有向量数据。当前脚本面向 macOS，会根据当前机器架构下载 Qdrant，并放到项目本地：
+`scripts/install_qdrant.sh` 只在首次部署或更新 Qdrant 二进制时执行。它不是日常重启命令，也不会清空已有向量数据。当前脚本面向 macOS，会根据当前机器架构下载 Qdrant，放到项目本地，并在端口空闲时临时启动一次做 healthz 验证：
 
 ```text
 .runtime/qdrant/bin/qdrant
