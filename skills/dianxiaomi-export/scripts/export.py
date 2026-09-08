@@ -21,6 +21,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -46,7 +47,7 @@ BASE_DIR = find_root(Path(__file__).resolve())
 sys.path.insert(0, str(BASE_DIR))  # 让 core.llm 可被导入
 load_dotenv(BASE_DIR / ".env")
 
-from core.llm import LLM, PROVIDERS  # noqa: E402
+from core.llm import LLM, make_llm_from_config  # noqa: E402
 
 # ── 日志 ────────────────────────────────────────────────
 LOG_DIR = BASE_DIR / "logs"
@@ -70,12 +71,22 @@ WORKSPACE = BASE_DIR / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
 # 关键列名（与视图列头对齐）
-COL_ZIP   = "*邮编"
-COL_CITY  = "*城市"
-COL_STATE = "*省/州"
-COL_CC    = "*国家二字码"
-COL_NOTE  = "买家备注"
-COL_IOSS  = "卖家税号（IOSS）"
+COL_ZIP    = "*邮编"
+COL_CITY   = "*城市"
+COL_STATE  = "*省/州"
+COL_CC     = "*国家二字码"
+COL_NOTE   = "买家备注"
+COL_IOSS   = "卖家税号（IOSS）"
+COL_AMOUNT = "申报金额（USD）"
+COL_QTY    = "*数量（大于0的整数）"
+
+# 按国家二字码定义申报金额汇总上限（USD），未列出的国家走 DEFAULT_AMOUNT_CAP
+COUNTRY_AMOUNT_CAPS: Dict[str, float] = {
+    "CA": 12.0,   # 加拿大
+    "TH": 40.0,   # 泰国
+}
+DEFAULT_AMOUNT_CAP = 59.0
+MIN_UNIT_AMOUNT    = 0.01  # 单价下限
 
 AI_BATCH_SIZE = 20
 EMPTY_ZIP_FILL = "000000"
@@ -98,7 +109,7 @@ TAX_HINT_RE = re.compile(r"(IOSS|VAT|EORI|税号|TAX\s*ID|GST|ABN)", re.IGNORECA
 class ChangeLog:
     """记录每一处单元格修改，用于：① 涂黄高亮 ② 控制台明细输出"""
 
-    KINDS = ("zip_fill", "ioss_regex", "ioss_ai", "address_ai")
+    KINDS = ("zip_fill", "ioss_regex", "ioss_ai", "address_ai", "amount_cap")
 
     def __init__(self):
         self.entries: List[Tuple[int, str, object, object, str]] = []
@@ -139,17 +150,11 @@ def load_llm() -> Optional[LLM]:
         log.warning("config.yaml 不存在，跳过 AI")
         return None
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    provider = cfg.get("active_provider", "kimi")
-    pcfg = PROVIDERS.get(provider)
-    if not pcfg:
-        log.warning(f"未知 provider={provider}，跳过 AI")
+    try:
+        return make_llm_from_config(cfg, BASE_DIR)
+    except RuntimeError as exc:
+        log.warning(f"{exc}，跳过 AI")
         return None
-    api_key = os.getenv(pcfg["env_key"], "")
-    if not api_key:
-        log.warning(f"未配置 {pcfg['env_key']}，跳过 AI")
-        return None
-    model = (cfg.get("providers", {}).get(provider) or {}).get("model")
-    return LLM(provider=provider, api_key=api_key, model=model)
 
 
 def parse_json_loose(text: str) -> Optional[object]:
@@ -311,6 +316,114 @@ def ai_fix_addresses(llm: LLM, rows: List[Dict], changes: ChangeLog) -> int:
 
 
 # ════════════════════════════════════════════════════════════
+#  规则四：按国家上限封顶申报金额汇总
+# ════════════════════════════════════════════════════════════
+def _to_float(v) -> float:
+    if v is None or v == "":
+        return 0.0
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _to_int(v) -> int:
+    if v is None or v == "":
+        return 0
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _group_total(rows: List[Dict], idxs: List[int]) -> float:
+    return round(sum(
+        _to_float(rows[i].get(COL_AMOUNT)) * _to_int(rows[i].get(COL_QTY))
+        for i in idxs
+    ), 2)
+
+
+def cap_declare_amount(rows: List[Dict], changes: ChangeLog) -> List[Dict]:
+    """
+    按订单号分组对 Σ(申报金额 × 数量) 做封顶。
+
+    策略：
+      1. 计算每组当前汇总；未超上限 → 跳过
+      2. 超限 → 随机抽行，把该行单价降到刚好令汇总 = 上限
+      3. 该行单价 < MIN_UNIT_AMOUNT 时压到下限，继续抽下一行
+      4. 全部行都压到下限仍超 → 标记为 "unsatisfied"，尽力而为
+
+    返回组级报告 [{order_no, country, cap, old_total, new_total, ok}]
+    """
+    groups: Dict[str, List[int]] = {}
+    for i, r in enumerate(rows):
+        key = r.get(COL_ORDER_NO) or f"__row{i}"
+        groups.setdefault(key, []).append(i)
+
+    reports: List[Dict] = []
+    eps = 1e-6
+
+    for order_no, idxs in groups.items():
+        country = (rows[idxs[0]].get(COL_CC) or "").strip().upper()
+        cap = COUNTRY_AMOUNT_CAPS.get(country, DEFAULT_AMOUNT_CAP)
+        old_total = _group_total(rows, idxs)
+
+        if old_total <= cap + eps:
+            continue  # 未超限
+
+        # 筛出可调整候选：数量 > 0 且当前申报金额 > 下限
+        candidates = [
+            i for i in idxs
+            if _to_int(rows[i].get(COL_QTY)) > 0
+            and _to_float(rows[i].get(COL_AMOUNT)) > MIN_UNIT_AMOUNT
+        ]
+        random.shuffle(candidates)
+
+        for i in candidates:
+            if _group_total(rows, idxs) <= cap + eps:
+                break  # 已达标
+
+            qty = _to_int(rows[i].get(COL_QTY))
+            old_amt = _to_float(rows[i].get(COL_AMOUNT))
+            # 假设本行降到 X，其它行总和不变
+            others_total = _group_total(rows, idxs) - old_amt * qty
+            needed_unit = (cap - others_total) / qty
+
+            if needed_unit >= MIN_UNIT_AMOUNT:
+                # 正向解：直接降到 needed
+                new_amt = round(needed_unit, 2)
+                # 防止四舍五入向上让总额略超 cap
+                while new_amt > MIN_UNIT_AMOUNT and (others_total + new_amt * qty) > cap + eps:
+                    new_amt = round(new_amt - 0.01, 2)
+                new_amt = max(new_amt, MIN_UNIT_AMOUNT)
+            else:
+                # 单这一行降到下限还不够 → 先压到下限，循环再抽下一行
+                new_amt = MIN_UNIT_AMOUNT
+
+            if abs(new_amt - old_amt) >= 0.005:
+                changes.add(i, COL_AMOUNT, old_amt, new_amt, "amount_cap")
+                rows[i][COL_AMOUNT] = new_amt
+
+        new_total = _group_total(rows, idxs)
+        ok = new_total <= cap + eps
+        if not ok:
+            log.warning(
+                f"订单 {order_no} ({country}) 即便所有行降至 {MIN_UNIT_AMOUNT} USD，"
+                f"汇总仍为 {new_total:.2f}，超过上限 {cap:.2f}"
+            )
+        reports.append({
+            "order_no":  order_no,
+            "country":   country,
+            "cap":       cap,
+            "old_total": old_total,
+            "new_total": new_total,
+            "ok":        ok,
+        })
+
+    return reports
+
+
+# ════════════════════════════════════════════════════════════
 #  写 Excel（修改过的单元格涂黄）
 # ════════════════════════════════════════════════════════════
 def write_xlsx(rows: List[Dict], headers: List[str], changes: ChangeLog) -> Path:
@@ -343,10 +456,11 @@ def _row_label(rows: List[Dict], i: int) -> str:
     return f"{no}{suffix}"
 
 
-def _print_section(title: str, lines: List[str]) -> None:
+def _print_section(title: str, lines: List[str], count_label: Optional[str] = None) -> None:
     if not lines:
         return
-    print(f"\n● {title}（{len(lines)} 行）")
+    suffix = count_label if count_label is not None else f"{len(lines)} 行"
+    print(f"\n● {title}（{suffix}）")
     shown = lines[:DETAIL_PRINT_LIMIT]
     for line in shown:
         print(f"    {line}")
@@ -356,7 +470,7 @@ def _print_section(title: str, lines: List[str]) -> None:
             log.info(f"[{title}] {line}")
 
 
-def print_change_details(rows: List[Dict], changes: ChangeLog) -> None:
+def print_change_details(rows: List[Dict], changes: ChangeLog, cap_reports: Optional[List[Dict]] = None) -> None:
     # 1) 空邮编
     zip_lines = [_row_label(rows, e[0]) for e in changes.by_kind("zip_fill")]
     _print_section("空邮编 → 000000", zip_lines)
@@ -380,6 +494,35 @@ def print_change_details(rows: List[Dict], changes: ChangeLog) -> None:
         )
         addr_lines.append(f"{_row_label(rows, i)}  ({diffs})")
     _print_section("AI 校正地址", addr_lines)
+
+    # 4) 申报金额封顶（按订单聚合：每个订单一段，含国家上限/原汇总/新汇总 + 各行改动）
+    if cap_reports:
+        amt_by_row: Dict[int, List[Tuple[float, float]]] = {}
+        for e in changes.by_kind("amount_cap"):
+            amt_by_row.setdefault(e[0], []).append((float(e[2]), float(e[3])))
+
+        cap_lines: List[str] = []
+        for rpt in cap_reports:
+            flag = "" if rpt["ok"] else "  ⚠ 仍超上限"
+            cap_lines.append(
+                f"{rpt['order_no']}  [{rpt['country'] or '?'} 上限 {rpt['cap']:.2f}]"
+                f"  汇总 {rpt['old_total']:.2f} → {rpt['new_total']:.2f}{flag}"
+            )
+            # 找出该订单下被改的行，输出明细
+            for i, r in enumerate(rows):
+                if r.get(COL_ORDER_NO) != rpt["order_no"]:
+                    continue
+                if i in amt_by_row:
+                    qty = _to_int(r.get(COL_QTY))
+                    for old, new in amt_by_row[i]:
+                        cap_lines.append(
+                            f"    ↳ {COL_AMOUNT}  {old:.2f} → {new:.2f}  (数量 {qty})"
+                        )
+        warn_n = sum(1 for r in cap_reports if not r["ok"])
+        label = f"{len(cap_reports)} 单"
+        if warn_n:
+            label += f"，其中 {warn_n} 单无法达标"
+        _print_section("申报金额封顶（按国家）", cap_lines, count_label=label)
 
 
 def print_locked_orders(rows: List[Dict], target_ids: List[int]) -> None:
@@ -418,7 +561,8 @@ def main():
     llm = None if args.no_ai else load_llm()
     out_path: Optional[Path] = None
     rollback_reason: Optional[str] = None
-    stat = {"exported": 0, "ai_addr": 0, "zip_fill": 0, "ioss": 0, "locked": 0}
+    stat = {"exported": 0, "ai_addr": 0, "zip_fill": 0, "ioss": 0, "amount_cap": 0, "amount_warn": 0, "locked": 0}
+    cap_reports: List[Dict] = []
 
     try:
         with conn.cursor() as cur:
@@ -459,6 +603,11 @@ def main():
             stat["ai_addr"] = ai_fix_addresses(llm, rows, changes)
         else:
             log.info("已跳过 AI 地址校验")
+
+        # 4.5) 按国家上限封顶申报金额汇总
+        cap_reports = cap_declare_amount(rows, changes)
+        stat["amount_cap"]  = sum(1 for r in cap_reports)
+        stat["amount_warn"] = sum(1 for r in cap_reports if not r["ok"])
 
         # 5) 写 Excel（带高亮）
         out_path = write_xlsx(rows, headers, changes)
@@ -503,6 +652,8 @@ def main():
     print(f"  AI 校正地址：{stat['ai_addr']} 行")
     print(f"  空邮编兜底：{stat['zip_fill']} 行")
     print(f"  回填 IOSS 税号：{stat['ioss']} 行")
+    cap_suffix = f"（其中 {stat['amount_warn']} 单无法达标）" if stat['amount_warn'] else ""
+    print(f"  申报金额封顶：{stat['amount_cap']} 单{cap_suffix}")
     print(f"  锁定订单数：{stat['locked']}{'（dry-run 未锁）' if args.dry_run else ''}")
     print(f"  输出文件：{out_path.relative_to(BASE_DIR) if out_path else '-'}")
     print(f"  耗时：{elapsed:.1f} 秒")
@@ -512,7 +663,7 @@ def main():
         print(f"\n{'─' * 52}")
         print("  修改明细（Excel 中已用黄色背景标记）")
         print(f"{'─' * 52}")
-        print_change_details(rows, changes)
+        print_change_details(rows, changes, cap_reports)
     else:
         print("\n  无任何字段被修改")
 

@@ -18,6 +18,10 @@ def print_step(step):
     console.print(f"  [yellow]🔧 {step['name']}({args_summary})[/yellow]")
 
 
+def print_progress(progress):
+    console.print(progress.get("text", ""), end="", markup=False)
+
+
 def run_once(agent, text: str, attachments: Optional[List[str]] = None):
     """执行单次请求并打印结果"""
     console.print(f"[bold cyan]用户:[/bold cyan] {text}")
@@ -25,10 +29,18 @@ def run_once(agent, text: str, attachments: Optional[List[str]] = None):
         console.print(f"[dim]附件：{attachments}[/dim]")
 
     try:
-        reply, steps = agent.run(text, attachments=attachments, on_step=print_step)
+        reply, steps = agent.run(
+            text,
+            attachments=attachments,
+            on_step=print_step,
+            on_progress=print_progress,
+        )
         console.print()
         console.print(Panel(Markdown(reply), title="[bold green]Agent 回复[/bold green]", border_style="green"))
         return reply
+    except KeyboardInterrupt:
+        console.print("\n[yellow]任务已中止[/yellow]")
+        return None
     except Exception as e:
         logger.error(f"执行出错：{e}", exc_info=True)
         console.print(f"[bold red]错误：{e}[/bold red]")
@@ -56,10 +68,12 @@ def run_interactive(agent):
             break
 
         try:
-            reply, _ = agent.run(text, on_step=print_step)
+            reply, _ = agent.run(text, on_step=print_step, on_progress=print_progress)
             console.print()
             console.print(Panel(Markdown(reply), title="[bold green]Agent[/bold green]", border_style="green"))
             console.print()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]当前任务已中止[/yellow]\n")
         except Exception as e:
             logger.error(f"执行出错：{e}", exc_info=True)
             console.print(f"[bold red]错误：{e}[/bold red]\n")

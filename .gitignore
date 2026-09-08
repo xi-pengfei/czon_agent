@@ -5,11 +5,18 @@
 # 运行时目录内容
 uploads/*
 logs/*
-data/sample.db
 data/qdrant/
+data/artifacts/
+data/*.json
 .runtime/
 workspace/*
+skills/*/runtime/
+skills/*/data/
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.key
 webui.log
 !uploads/.gitkeep
 !logs/.gitkeep
@@ -24,6 +31,20 @@ __pycache__/
 venv/
 dist/
 build/
+frontend/node_modules/
+
+# 企业私有 Skills：仅在客户环境单独部署，不进入公共仓库
+skills/consumable-inventory/
+skills/daily-report/
+skills/dingtalk-kingdee-voucher-sync/
+skills/invoice-ocr/
+skills/kingdee-xingchen/
+skills/kingdee-xingchen-sale-order-sync/
+skills/patient-consultation/
+skills/patient-recall/
+skills/pledgebox-dianxiaomi-export/
+skills/pledgebox-kingdee-sale-outbound-sync/
+skills/post-treatment-followup/
 
 # IDE
 .idea/

@@ -5,67 +5,78 @@ czon Agent 统一入口
 子命令：
   python main.py                       # 交互式 REPL
   python main.py "消息内容"             # 单次执行并退出
-  python main.py webui                 # 启动 WebUI（默认端口 8000）
-  python main.py setup                 # 初始化示例数据（sample.db）
+  python main.py webui                 # 按 config.yaml 启动 WebUI
+  python main.py setup-admin           # 创建首个系统管理员
 """
 import argparse
 import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
 
-# 加载 .env
-load_dotenv()
-
-_qdrant_start_attempted = False
+PROJECT_ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 def load_config() -> dict:
-    config_path = Path("config.yaml")
-    if not config_path.exists():
-        print("[警告] config.yaml 不存在，使用默认配置")
-        return {}
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    if not CONFIG_PATH.exists():
+        raise RuntimeError(f"配置文件不存在：{CONFIG_PATH}")
+    with CONFIG_PATH.open(encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+    if not isinstance(config, dict):
+        raise RuntimeError("config.yaml 顶层必须是映射结构")
+    return config
 
 
 def build_agent(config: dict, provider_override: Optional[str] = None):
     """根据配置构建 Agent 实例"""
+    from core.access_control import allowed_names
     from core.agent import Agent
     from core.llm import make_llm_from_config
     from core.skills import SkillLoader
     from core.tools import ToolPolicy, ToolRegistry
-    from tools_builtin import file_ops, shell, skill_ops, vector_store
+    from tools_builtin import file_ops, shell, skill_ops
 
     # 如果有 provider 覆盖（WebUI 切换模型用）
     if provider_override:
         config = {**config, "active_provider": provider_override}
+    username = str(config.get("current_user", "cli"))
+    access = config.get("current_access")
+    if access is None:
+        from types import SimpleNamespace
+        access = SimpleNamespace(skills="*", tools="*", models="*", role="administrator")
+    provider = str(config.get("active_provider", ""))
+    if access.models != "*" and provider not in access.models:
+        raise RuntimeError(f"用户 '{username}' 没有使用模型 '{provider}' 的权限")
 
-    llm = make_llm_from_config(config)
+    llm = make_llm_from_config(config, PROJECT_ROOT)
 
     skills_cfg = config.get("skills", {})
     skills_dir = Path(skills_cfg.get("dir", "./skills"))
     enabled = skills_cfg.get("enabled")  # None = 全部
+    enabled = allowed_names(enabled, access.skills)
 
     skill_loader = SkillLoader(skills_dir=skills_dir, enabled=enabled)
     skill_loader.scan()
 
     workspace_dir = config.get("workspace", {}).get("dir", "./workspace")
 
-    tool_policy = ToolPolicy(config.get("tool_policy", {}))
+    policy_config = dict(config.get("tool_policy", {}))
+    if access.tools != "*":
+        known_tools = {"read", "write", "bash", "activate_skill"}
+        policy_config["block_tools"] = sorted(
+            set(policy_config.get("block_tools") or []) | (known_tools - set(access.tools))
+        )
+    tool_policy = ToolPolicy(policy_config)
     registry = ToolRegistry(policy=tool_policy)
     file_ops.register(registry, workspace_dir=workspace_dir)
-    shell.register(registry)
+    shell.register(registry, active_provider=provider)
     skill_ops.register(registry, skill_loader)
-    vector_store.register(registry)
-
     agent_cfg = config.get("agent", {})
-    max_iter = agent_cfg.get("max_iterations", 15)
     extra_rules = [
         _render_rule(rule, workspace_dir)
         for rule in (agent_cfg.get("extra_rules") or [])
@@ -74,90 +85,16 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
         llm=llm,
         skill_loader=skill_loader,
         tool_registry=registry,
-        max_iterations=max_iter,
+        max_runtime_seconds=_positive_int(agent_cfg, "max_runtime_seconds"),
+        max_consecutive_errors=_positive_int(agent_cfg, "max_consecutive_errors"),
         extra_rules=extra_rules,
     )
-
-
-def cmd_setup(config: dict):
-    """初始化示例数据库"""
-    print("正在初始化示例数据库…")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "data/seed_sample_db.py"],
-        capture_output=True, text=True
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        print(result.stderr)
-        sys.exit(1)
-
-
-def ensure_qdrant_running(config: dict):
-    global _qdrant_start_attempted
-
-    qdrant_cfg = config.get("qdrant") or {}
-    if not qdrant_cfg.get("auto_start", True):
-        return
-
-    url = str(qdrant_cfg.get("url", "http://localhost:6333")).rstrip("/")
-    if _qdrant_healthy(url):
-        return
-    if _qdrant_start_attempted:
-        print(f"[警告] Qdrant 仍未通过健康检查，已跳过重复启动：{url}")
-        return
-
-    bin_path = Path(os.path.expanduser(str(qdrant_cfg.get("bin", "./.runtime/qdrant/bin/qdrant"))))
-    if not bin_path.is_absolute():
-        bin_path = Path.cwd() / bin_path
-    bin_path = bin_path.resolve()
-    if not bin_path.exists():
-        print(f"[警告] Qdrant 未运行，且未找到可执行文件：{bin_path}")
-        print("       请先运行：bash scripts/install_qdrant.sh")
-        return
-
-    data_dir = Path(str(qdrant_cfg.get("data_dir", "./data/qdrant"))).expanduser()
-    if not data_dir.is_absolute():
-        data_dir = Path.cwd() / data_dir
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    log_path = data_dir / "qdrant.log"
-    log_file = open(log_path, "ab")
-    try:
-        subprocess.Popen(
-            [str(bin_path)],
-            cwd=str(data_dir),
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        _qdrant_start_attempted = True
-    finally:
-        log_file.close()
-
-    for _ in range(20):
-        if _qdrant_healthy(url):
-            print(f"[Qdrant] 已启动：{url}，数据目录：{data_dir}")
-            return
-        time.sleep(0.5)
-
-    print(f"[警告] Qdrant 启动后健康检查未通过，日志：{log_path}")
-
-
-def _qdrant_healthy(url: str) -> bool:
-    try:
-        import requests
-        response = requests.get(f"{url}/healthz", timeout=1)
-        return response.ok and "passed" in response.text.lower()
-    except Exception:
-        return False
 
 
 def cmd_cli(config: dict, message: Optional[str] = None):
     """CLI 模式"""
     from adapters.cli import run_interactive, run_once
 
-    ensure_qdrant_running(config)
     agent = build_agent(config)
 
     if message:
@@ -171,16 +108,39 @@ def cmd_webui(config: dict, args):
     import uvicorn
     from adapters.server import create_app
 
-    ensure_qdrant_running(config)
+    webui_cfg = config.get("webui")
+    if not isinstance(webui_cfg, dict):
+        raise RuntimeError("config.yaml 缺少 webui 配置")
+    host = str(webui_cfg["host"]).strip()
+    port = _positive_int(webui_cfg, "port")
 
-    webui_cfg = config.get("webui", {})
-    host = webui_cfg.get("host", "127.0.0.1")
-    port = webui_cfg.get("port", 8000)
+    from types import SimpleNamespace
+    from core.access_control import allowed_names
+    from core.auth_store import AuthStore, DEFAULT_ROLES
+    from core.llm import DEFAULT_MODELS
+    from core.skills import SkillLoader
 
-    def agent_factory(provider: str):
+    session_db = webui_cfg.get("session_db", "./data/czon_agent.db")
+    db_path = Path(session_db)
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    auth_store = AuthStore(db_path)
+    auth_store.seed_roles(DEFAULT_ROLES)
+    auth_store.seed_models(DEFAULT_MODELS)
+
+    def access_resolver(username: str):
+        access = auth_store.get_access(username)
+        if access is None:
+            raise RuntimeError("用户不存在或已禁用")
+        return SimpleNamespace(**access)
+
+    def agent_factory(provider: str, username: str):
+        access = access_resolver(username)
         webui_rules = config.get("webui", {}).get("extra_rules") or []
         merged_config = {
             **config,
+            "current_user": username,
+            "current_access": access,
             "agent": {
                 **(config.get("agent") or {}),
                 "extra_rules": [
@@ -191,22 +151,96 @@ def cmd_webui(config: dict, args):
         }
         return build_agent(merged_config, provider_override=provider)
 
+    def skill_catalog_provider(username: str):
+        access = access_resolver(username)
+        skills_cfg = config.get("skills") or {}
+        enabled = allowed_names(skills_cfg.get("enabled"), access.skills)
+        loader = SkillLoader(Path(skills_cfg.get("dir", "./skills")), enabled=enabled)
+        loader.scan()
+        return [
+            {"name": meta.name, "description": meta.description}
+            for meta in loader.catalog.values()
+        ]
+
+    def provider_catalog_provider(username: str):
+        access = access_resolver(username)
+        providers = {item["name"]: item for item in auth_store.list_models()}
+        allowed = providers.keys() if access.models == "*" else access.models
+        return [
+            {
+                "name": name,
+                "display_name": providers[name]["display_name"],
+                "model": providers[name]["model"],
+                "supports_vision": providers[name]["supports_vision"],
+                "configured": bool(auth_store.get_model_api_key(name)),
+            }
+            for name in allowed
+            if name in providers
+        ]
+
     workspace_dir = config.get("workspace", {}).get("dir", "./workspace")
-    app = create_app(agent_factory, workspace_dir=workspace_dir)
+    app = create_app(
+        agent_factory,
+        workspace_dir=workspace_dir,
+        project_root=PROJECT_ROOT,
+        session_db_path=session_db,
+        auth_store=auth_store,
+        cookie_secure=bool(webui_cfg.get("cookie_secure", False)),
+        skill_catalog_provider=skill_catalog_provider,
+        provider_catalog_provider=provider_catalog_provider,
+    )
     print(f"czon Agent WebUI 启动中：http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning", server_header=False)
+
+
+def cmd_setup_admin(config: dict):
+    import getpass
+    import re
+    from core.auth_store import AuthStore, DEFAULT_ROLES
+    from core.llm import DEFAULT_MODELS
+
+    webui_cfg = config.get("webui") or {}
+    db_path = Path(webui_cfg.get("session_db", "./data/czon_agent.db"))
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    store = AuthStore(db_path)
+    store.seed_roles(DEFAULT_ROLES)
+    store.seed_models(DEFAULT_MODELS)
+    if store.has_users():
+        raise RuntimeError("系统中已存在用户，请在管理员页面创建或管理账号")
+    username = input("管理员账号 [admin]：").strip() or "admin"
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", username):
+        raise RuntimeError("用户名格式不合法")
+    password = getpass.getpass("初始密码（至少 6 位）：")
+    confirm = getpass.getpass("再次输入密码：")
+    if password != confirm:
+        raise RuntimeError("两次输入的密码不一致")
+    if len(password) < 6:
+        raise RuntimeError("密码至少需要 6 位")
+    store.create_user(username, password, "administrator", must_change=True)
+    print(f"管理员 {username} 已创建，请启动 WebUI 并登录后修改初始密码。")
 
 
 def _render_rule(rule, workspace_dir: str) -> str:
     return str(rule).replace("{workspace_dir}", workspace_dir.rstrip("/"))
 
 
+def _positive_int(section: dict, key: str) -> int:
+    if key not in section:
+        raise RuntimeError(f"config.yaml 缺少配置项：{key}")
+    value = section[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"config.yaml 配置项 {key} 必须是正整数")
+    return value
+
+
 def main():
+    os.chdir(PROJECT_ROOT)
     parser = argparse.ArgumentParser(
-        prog="czon-agent",
+        prog="czon_agent",
         description="czon Agent — 极简 Python Agent Runtime",
     )
-    parser.add_argument("command_or_message", nargs="?", help="webui / setup / 或直接输入消息")
+    parser.add_argument("command_or_message", nargs="?", help="webui / setup-admin / 或直接输入消息")
     parser.add_argument("message_parts", nargs=argparse.REMAINDER, help="消息剩余内容")
 
     args = parser.parse_args()
@@ -217,18 +251,26 @@ def main():
     debug = "--debug" in sys.argv
     setup_logging(level=logging.DEBUG if debug else logging.INFO)
 
-    config = load_config()
+    try:
+        config = load_config()
+    except (OSError, yaml.YAMLError, RuntimeError, KeyError) as exc:
+        print(f"[配置错误] {exc}", file=sys.stderr)
+        sys.exit(2)
 
-    command = args.command_or_message
-    if command == "setup":
-        cmd_setup(config)
-    elif command == "webui":
-        cmd_webui(config, args)
-    elif command:
-        message = " ".join([command] + args.message_parts).strip()
-        cmd_cli(config, message=message)
-    else:
-        cmd_cli(config)
+    try:
+        command = args.command_or_message
+        if command == "setup-admin":
+            cmd_setup_admin(config)
+        elif command == "webui":
+            cmd_webui(config, args)
+        elif command:
+            message = " ".join([command] + args.message_parts).strip()
+            cmd_cli(config, message=message)
+        else:
+            cmd_cli(config)
+    except (RuntimeError, KeyError) as exc:
+        print(f"[启动失败] {exc}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

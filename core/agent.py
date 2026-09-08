@@ -5,6 +5,8 @@ import base64
 import json
 import logging
 import mimetypes
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional, List, Dict, Tuple
@@ -14,20 +16,31 @@ from core.tools import ToolResult
 logger = logging.getLogger(__name__)
 
 
+class AgentStopped(RuntimeError):
+    """Raised when the caller asks an active run to stop."""
+
+
+class AgentTimeout(RuntimeError):
+    """Raised when a run exceeds its total runtime budget."""
+
+
 class Agent:
     def __init__(
         self,
         llm,
         skill_loader,
         tool_registry,
-        max_iterations: int = 15,
+        max_runtime_seconds: int,
+        max_consecutive_errors: int,
         extra_rules: Optional[List[str]] = None,
     ):
         self.llm = llm
         self.skill_loader = skill_loader
         self.tool_registry = tool_registry
-        self.max_iterations = max_iterations
+        self.max_runtime_seconds = max_runtime_seconds
+        self.max_consecutive_errors = max_consecutive_errors
         self.extra_rules = extra_rules or []
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
     def run(
         self,
@@ -36,6 +49,8 @@ class Agent:
         history: Optional[List[Dict]] = None,
         on_step: Optional[Callable] = None,
         on_delta: Optional[Callable[[str], None]] = None,
+        on_progress: Optional[Callable[[Dict], None]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> Tuple[str, List[Dict]]:
         """
         执行一次完整的 agent loop。
@@ -47,11 +62,26 @@ class Agent:
         messages = list(history or [])
         messages.append(self._build_user_message(user_text, attachments))
         steps: List[Dict] = []
+        deadline = time.monotonic() + self.max_runtime_seconds
+        iteration = 0
+        consecutive_errors = 0
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
-        for iteration in range(1, self.max_iterations + 1):
+        while True:
+            self._check_control(stop_event, deadline)
+            iteration += 1
             logger.info(f"第 {iteration} 轮 LLM 调用")
             tools = self.tool_registry.get_openai_schemas()
-            msg = self._complete(system, messages, tools, on_delta=on_delta)
+            msg = self._complete(
+                system,
+                messages,
+                tools,
+                on_delta=on_delta,
+                stop_event=stop_event,
+                deadline=deadline,
+            )
+            self._record_usage(getattr(msg, "usage", None))
+            self._check_control(stop_event, deadline)
 
             # 无工具调用 → 最终回复
             if not msg.tool_calls:
@@ -105,11 +135,37 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": json.dumps(result_payload, ensure_ascii=False),
                     })
+                    consecutive_errors += 1
+                    if consecutive_errors >= self.max_consecutive_errors:
+                        return self._error_limit_reply(consecutive_errors), steps
                     continue
 
-                result = self.tool_registry.execute(tool_name, args)
+                self._check_control(stop_event, deadline)
+                def report_progress(progress):
+                    if on_progress:
+                        on_progress({
+                            "type": "tool_progress",
+                            "id": tc.id,
+                            "name": tool_name,
+                            **progress,
+                        })
+
+                started = time.monotonic()
+                if on_progress:
+                    on_progress({"type": "tool_start", "id": tc.id, "name": tool_name})
+                result = self.tool_registry.execute(
+                    tool_name,
+                    args,
+                    progress_callback=report_progress,
+                    stop_event=stop_event,
+                    execution_timeout=max(1, int(deadline - time.monotonic())),
+                )
+                self._check_control(stop_event, deadline)
                 result_payload = result.to_dict()
-                step = {"type": "tool_call", "name": tool_name, "args": args, "result": result_payload}
+                step = {
+                    "type": "tool_call", "id": tc.id, "name": tool_name, "args": args,
+                    "result": result_payload, "duration_ms": round((time.monotonic() - started) * 1000),
+                }
                 steps.append(step)
 
                 if on_step:
@@ -127,11 +183,23 @@ class Agent:
                     logger.info("Agent 暂停，等待用户确认工具调用")
                     return reply, steps
 
-        # 超出最大轮次
-        last_progress = json.dumps(steps[-1]["result"], ensure_ascii=False)[:200] if steps else "无"
-        reply = f"任务未能在 {self.max_iterations} 轮内完成，已中止。最后的进展是：{last_progress}"
-        logger.warning(f"Agent 超出最大迭代次数 {self.max_iterations}")
-        return reply, steps
+                if result.ok:
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                    if consecutive_errors >= self.max_consecutive_errors:
+                        return self._error_limit_reply(consecutive_errors), steps
+
+    def _error_limit_reply(self, error_count: int) -> str:
+        logger.warning("Agent 连续工具失败 %s 次，已停止", error_count)
+        return "工具连续多次执行失败，任务已停止。请检查最后一条错误后重试。"
+
+    @staticmethod
+    def _check_control(stop_event: Optional[threading.Event], deadline: float) -> None:
+        if stop_event and stop_event.is_set():
+            raise AgentStopped("任务已由用户停止")
+        if time.monotonic() >= deadline:
+            raise AgentTimeout("任务执行时间已达到上限")
 
     def _build_system_prompt(self) -> str:
         """构建核心 system prompt（< 1000 tokens）"""
@@ -156,6 +224,7 @@ Rules:
 - Always use activate_skill BEFORE bash-ing into a skill's scripts
 - After activating a skill, follow its SKILL.md instructions exactly
 - Never merely tell the user what command to run when you can run it yourself
+- Never install or upgrade Python packages during a task unless the user explicitly requested that dependency change
 - Attached files are local files. Use read/bash for text files and activate a relevant skill for office documents. Do not treat non-image attachments as images.
 - After any mutating action, verify with a follow-up command before claiming success
 - Tool results are JSON objects with ok/data/error/meta fields; inspect error.type before retrying
@@ -197,23 +266,39 @@ Rules:
         content.append({"type": "text", "text": text})
         return {"role": "user", "content": content}
 
-    def _complete(self, system: str, messages: List, tools: List, on_delta: Optional[Callable[[str], None]] = None):
+    def _complete(
+        self,
+        system: str,
+        messages: List,
+        tools: List,
+        on_delta: Optional[Callable[[str], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        deadline: Optional[float] = None,
+    ):
         if not on_delta:
             return self.llm.complete(system, messages, tools)
 
-        try:
-            stream = self.llm.stream_complete(system, messages, tools)
-            return self._consume_stream(stream, on_delta)
-        except Exception as e:
-            logger.warning(f"流式 LLM 调用失败，回退到普通调用：{e}")
-            return self.llm.complete(system, messages, tools)
+        stream = self.llm.stream_complete(system, messages, tools)
+        return self._consume_stream(stream, on_delta, stop_event, deadline)
 
-    def _consume_stream(self, stream, on_delta: Callable[[str], None]):
+    def _consume_stream(
+        self,
+        stream,
+        on_delta: Callable[[str], None],
+        stop_event: Optional[threading.Event],
+        deadline: Optional[float],
+    ):
         content_parts = []
         reasoning_parts = []
         tool_call_parts: Dict[int, Dict] = {}
+        usage = None
 
         for chunk in stream:
+            if deadline is not None:
+                self._check_control(stop_event, deadline)
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -261,7 +346,20 @@ Rules:
             content="".join(content_parts),
             reasoning_content="".join(reasoning_parts) or None,
             tool_calls=tool_calls or None,
+            usage=usage,
         )
+
+    def _record_usage(self, usage) -> None:
+        if usage is None:
+            return
+        input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "completion_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "input_tokens", 0)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "output_tokens", 0)
+        self.last_usage["input_tokens"] += max(0, int(input_tokens or 0))
+        self.last_usage["output_tokens"] += max(0, int(output_tokens or 0))
 
 
 def _error_type(result_payload: dict) -> Optional[str]:

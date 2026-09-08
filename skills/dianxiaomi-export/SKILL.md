@@ -1,6 +1,6 @@
 ---
 name: dianxiaomi-export
-description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Excel 表，自动用 AI 校正邮编/城市/省州不匹配的地址、空邮编填 000000、从买家备注里提取 IOSS 税号回填到卖家税号列，导出成功后把对应 pb_orders 的 order_status 改为 Locked。当用户说"导出店小蜜"、"导单"、"出店小蜜表"、"生成店小蜜导入文件"时触发。
+description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Excel 表，自动用 AI 校正邮编/城市/省州不匹配的地址、空邮编填 000000、从买家备注里提取 IOSS 税号回填到卖家税号列、按国家上限封顶申报金额汇总（CA 12 / TH 40 / 其他 60 USD），导出成功后把对应 pb_orders 的 order_status 改为 Locked。当用户说"导出店小蜜"、"导单"、"出店小蜜表"、"生成店小蜜导入文件"时触发。
 ---
 
 # 店小蜜导单技能
@@ -27,9 +27,10 @@ description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Exce
    - `*邮编` 为空 → 填 `000000`
    - `*邮编` 非空 → 加入 AI 批次（一次发 20 行，让模型返回修正后的城市/省州）
    - `买家备注` 用正则识别 IOSS（`IM\d{10}`）→ 写入 `卖家税号（IOSS）`；正则未命中但备注含"税号/VAT/IOSS/EORI"等关键词时，再走 AI 兜底一次
-4. **写盘**：输出 `workspace/dianxiaomi_<时间戳>.xlsx`
-5. **锁单**：`UPDATE pb_orders SET order_status='Locked' WHERE id IN (...)`，COMMIT
-6. **失败回滚**：导出或写盘任一环节抛错 → 整事务回滚，状态保持 `Unlock`
+4. **申报金额封顶**（按订单号聚合）：算 Σ(`申报金额(USD)` × `数量`)，与国家上限比对（CA=12 / TH=40 / 其他小于60）。超限则**随机选行**降单价，单价下限 0.01；一行降到底仍不够就再抽下一行；全部行降到底仍超 → 记 WARN 并尽力而为
+5. **写盘**：输出 `workspace/dianxiaomi_<时间戳>.xlsx`，所有被修改的单元格用**黄色背景**标记
+6. **锁单**：`UPDATE pb_orders SET order_status='Locked' WHERE id IN (...)`，COMMIT
+7. **失败回滚**：导出或写盘任一环节抛错 → 整事务回滚，状态保持 `Unlock`
 
 ## 返回示例
 
@@ -40,6 +41,7 @@ description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Exce
       AI 校正地址：12 行
       空邮编兜底：5 行
       回填 IOSS 税号：3 行
+      申报金额封顶：8 单
       锁定订单数：87
       输出文件：workspace/dianxiaomi_20260430_153012.xlsx
       耗时：14.2 秒
@@ -60,6 +62,13 @@ description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Exce
 
     ● AI 校正地址（12 行）
         AB1234-K-000130 (Hans Müller, DE)  (*城市 'Berlin' → 'München'; *省/州 'BE' → 'BY')
+        ...
+
+    ● 申报金额封顶（按国家）（8 单）
+        AB1234-K-000201  [CA 上限 12.00]  汇总 18.00 → 12.00
+            ↳ 申报金额（USD）  6.00 → 2.00  (数量 3)
+        AB1234-K-000218  [TH 上限 40.00]  汇总 55.00 → 40.00
+            ↳ 申报金额（USD）  11.00 → 8.00  (数量 5)
         ...
 
     ────────────────────────────────────────────────────
@@ -84,7 +93,8 @@ description: 把 v_dianxiaomi 视图中的未锁定订单导出为店小蜜 Exce
 `.env` 中需包含：
 
 - `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` — MySQL 连接
-- `MOONSHOT_API_KEY` 或 `DASHSCOPE_API_KEY` 或 `DEEPSEEK_API_KEY` — 与 `config.yaml` 的 `active_provider` 对应
+
+模型及 API Key 由系统管理页面统一配置；Skill 通过 `core.llm` 使用当前选择的模型。
 
 依赖包：`pymysql`、`openpyxl`、`python-dotenv`、`pyyaml`、`openai`（已在项目内）
 

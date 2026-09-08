@@ -2,6 +2,7 @@
 工具注册表：统一管理所有内置工具的 schema 和处理函数
 """
 import logging
+import re
 import shlex
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -145,7 +146,7 @@ class ToolPolicy:
             return PolicyDecision.block(
                 reason=(
                     f"禁止使用裸 SQLite 数据库路径 '{bare_db}'。"
-                    "请使用明确目录路径，例如 data/sample.db，或通过 sqlite-sample skill 的 query.py 查询。"
+                    "请使用包含目录的明确数据库路径，例如 data/business.db。"
                 ),
                 matched="bare sqlite db path",
             )
@@ -156,14 +157,14 @@ class ToolPolicy:
                 matched="ambiguous rm",
             )
 
-        matched = _find_match(lowered, bash_cfg.get("blocked_patterns") or [])
+        matched = _find_shell_match(lowered, bash_cfg.get("blocked_patterns") or [])
         if matched:
             return PolicyDecision.block(
                 reason=f"命令命中高危禁用规则：{matched}",
                 matched=matched,
             )
 
-        matched = _find_match(lowered, bash_cfg.get("confirm_patterns") or [])
+        matched = _find_shell_match(lowered, bash_cfg.get("confirm_patterns") or [])
         if matched:
             return PolicyDecision.confirm(
                 reason=f"命令命中风险确认规则：{matched}",
@@ -190,7 +191,14 @@ class ToolRegistry:
         self.tools: Dict[str, Dict] = {}
         self.policy = policy or ToolPolicy()
 
-    def register(self, name: str, description: str, parameters: dict, handler: Callable):
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict,
+        handler: Callable,
+        supports_progress: bool = False,
+    ):
         """注册一个工具"""
         self.tools[name] = {
             "schema": {
@@ -202,6 +210,7 @@ class ToolRegistry:
                 },
             },
             "handler": handler,
+            "supports_progress": supports_progress,
         }
         logger.debug(f"工具已注册：{name}")
 
@@ -209,7 +218,15 @@ class ToolRegistry:
         """返回 OpenAI function calling 格式的 tools 列表"""
         return [v["schema"] for v in self.tools.values()]
 
-    def execute(self, name: str, arguments: dict, confirmed: bool = False) -> ToolResult:
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        confirmed: bool = False,
+        progress_callback=None,
+        stop_event=None,
+        execution_timeout=None,
+    ) -> ToolResult:
         """
         执行工具，返回结构化结果。
         不存在的工具返回结构化错误（让 LLM 自己纠错，而不是抛异常）。
@@ -250,7 +267,12 @@ class ToolRegistry:
 
         try:
             logger.info(f"执行工具：{name}，参数：{arguments}")
-            result = self.tools[name]["handler"](**arguments)
+            call_args = dict(arguments)
+            if self.tools[name]["supports_progress"]:
+                call_args["progress_callback"] = progress_callback
+                call_args["stop_event"] = stop_event
+                call_args["control_timeout"] = execution_timeout
+            result = self.tools[name]["handler"](**call_args)
             if isinstance(result, ToolResult):
                 return result
             result_str = str(result)
@@ -294,6 +316,20 @@ def _find_match(value: str, patterns: Iterable[str]) -> Optional[str]:
         pattern_text = str(pattern).lower()
         if pattern_text and pattern_text in value:
             return str(pattern)
+    return None
+
+
+def _find_shell_match(value: str, patterns: Iterable[str]) -> Optional[str]:
+    """Match bare shell command words without treating '--form' as 'rm'."""
+    for pattern in patterns:
+        raw = str(pattern)
+        pattern_text = raw.lower()
+        command_word = pattern_text.rstrip()
+        if pattern_text.endswith(" ") and re.fullmatch(r"[a-z0-9_-]+", command_word):
+            if re.search(rf"(?<![a-z0-9_-]){re.escape(command_word)}(?=\s)", value):
+                return raw
+        elif pattern_text and pattern_text in value:
+            return raw
     return None
 
 
