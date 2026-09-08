@@ -73,6 +73,8 @@ python main.py "帮我列出 workspace 下的文件"
 
 Ubuntu 和 Windows 均支持在线一键安装：引导脚本会自动从 GitHub 下载最新版；客户现场不能访问 GitHub 时，仍可使用 ZIP 离线安装。
 
+下载 ZIP 并解压后，Windows 用户双击根目录的 `INSTALL_WINDOWS.cmd`；Ubuntu 用户在根目录执行 `bash INSTALL_UBUNTU.sh`。底层安装脚本位于 `deploy/`，普通用户不需要直接操作。
+
 ## 项目结构
 
 ```text

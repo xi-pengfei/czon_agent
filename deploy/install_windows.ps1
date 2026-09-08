@@ -13,6 +13,12 @@ function Stop-Install([string]$Message) {
 Write-Host "`nczon_agent Windows 一键安装" -ForegroundColor Cyan
 Write-Host "项目目录：$ProjectRoot`n"
 
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$Principal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
+if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Stop-Install "请双击项目根目录的 INSTALL_WINDOWS.cmd，它会自动申请管理员权限。"
+}
+
 $Launcher = $null
 $LauncherArgs = @()
 if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -84,9 +90,24 @@ if ($LASTEXITCODE -ne 0) {
     Stop-Install "程序检查失败，请检查上面的错误信息。"
 }
 
+$FirewallRule = Get-NetFirewallRule -DisplayName "czon_agent WebUI" -ErrorAction SilentlyContinue
+if (-not $FirewallRule) {
+    New-NetFirewallRule `
+        -DisplayName "czon_agent WebUI" `
+        -Direction Inbound `
+        -Protocol TCP `
+        -LocalPort 8000 `
+        -Action Allow | Out-Null
+}
+
+$PortInUse = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+if (-not $PortInUse) {
+    Start-Process -FilePath $StartFile
+}
+
 Write-Host "`n安装完成。" -ForegroundColor Green
-Write-Host "启动方式：双击 $StartFile"
+Write-Host "程序已经启动。以后需要手工启动时，双击 $StartFile"
 Write-Host "本机地址：http://127.0.0.1:8000"
 Write-Host "局域网地址：http://这台电脑的IP:8000"
-Write-Host "其他电脑需要访问时，请以管理员身份放行 Windows 防火墙 TCP 8000 端口。"
+Write-Host "Windows 防火墙 TCP 8000 端口已经放行。"
 Write-Host "首次登录后请立即修改初始密码，并在管理页面配置模型。"

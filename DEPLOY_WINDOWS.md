@@ -12,6 +12,17 @@
 
 GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装完成后单独交付。
 
+## 小白最快安装方式
+
+1. 从 GitHub 点击 `Code` → `Download ZIP`。
+2. 解压到一个固定位置，推荐 `C:\czon_agent`。
+3. 打开解压后的文件夹。
+4. 双击根目录中的 `INSTALL_WINDOWS.cmd`。
+5. Windows 询问是否允许更改设备时，点击“是”。
+6. 创建系统管理员，然后等待显示“安装完成”。
+
+安装程序会自动创建 Python 环境、安装依赖、放行防火墙 TCP `8000` 端口、启动程序并生成日常启动文件。用户不需要进入 `deploy` 文件夹，也不需要手工执行 PowerShell 命令。
+
 ## 方法一：联网一键安装（推荐）
 
 在开始菜单搜索 PowerShell，点击右键，选择“以管理员身份运行”，然后执行：
@@ -48,13 +59,12 @@ git clone https://github.com/xi-pengfei/czon_agent.git
 cd C:\czon_agent
 ```
 
-### 第二步：运行安装脚本
+### 第二步：运行安装程序
 
-在项目目录的 PowerShell 中执行：
+直接双击项目根目录的：
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\deploy\install_windows.ps1
+```text
+INSTALL_WINDOWS.cmd
 ```
 
 脚本会自动完成：
@@ -126,7 +136,7 @@ http://192.168.1.30:8000
 
 ## 方法三：完全手工安装
 
-获取源码并进入项目目录后，在 PowerShell 中执行：
+获取源码并进入项目目录后，以管理员身份打开 PowerShell 并执行：
 
 ```powershell
 py -3 -m venv .venv

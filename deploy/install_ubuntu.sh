@@ -29,8 +29,9 @@ printf '程序将安装到：%s\n\n' "$INSTALL_DIR"
 
 USE_NGINX=""
 while [[ "$USE_NGINX" != "y" && "$USE_NGINX" != "n" ]]; do
-  read -r -p "是否安装 Nginx？输入 y 使用 80 端口，输入 n 直接使用 8000 端口 [y/n]：" USE_NGINX
+  read -r -p "是否安装 Nginx？直接按回车表示安装，输入 n 表示不安装 [Y/n]：" USE_NGINX
   USE_NGINX="${USE_NGINX,,}"
+  USE_NGINX="${USE_NGINX:-y}"
 done
 
 if [[ "$SOURCE_DIR" != "$INSTALL_DIR" && -e "$INSTALL_DIR" ]] && find "$INSTALL_DIR" -mindepth 1 -print -quit | grep -q .; then

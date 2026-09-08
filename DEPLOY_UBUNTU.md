@@ -13,6 +13,21 @@
 
 GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装完成后单独放入客户服务器。
 
+## 小白最快安装方式
+
+1. 从 GitHub 点击 `Code` → `Download ZIP`。
+2. 把 ZIP 上传到 Ubuntu 并解压。
+3. 进入解压后的文件夹。
+4. 在这个文件夹打开终端，执行 `bash INSTALL_UBUNTU.sh`。
+5. 输入 Ubuntu 的 sudo 密码，再创建系统管理员。
+6. 等待显示“安装完成”，然后打开脚本给出的网页地址。
+
+Ubuntu Server 通常没有桌面，所以不能可靠地双击脚本。用户只需要记住这一条命令：
+
+```bash
+bash INSTALL_UBUNTU.sh
+```
+
 ## 方法一：联网一键安装（推荐）
 
 服务器能够访问 GitHub 时，只需执行：
@@ -59,7 +74,7 @@ cd czon_agent
 ### 第二步：运行一键安装脚本
 
 ```bash
-sudo bash deploy/install_ubuntu.sh
+bash INSTALL_UBUNTU.sh
 ```
 
 脚本会自动完成：
