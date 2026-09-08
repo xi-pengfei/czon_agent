@@ -12,7 +12,21 @@
 
 GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装完成后单独交付。
 
-## 方法一：PowerShell 一键安装（推荐）
+## 方法一：联网一键安装（推荐）
+
+在开始菜单搜索 PowerShell，点击右键，选择“以管理员身份运行”，然后执行：
+
+```powershell
+$installer = "$env:TEMP\czon_agent_bootstrap.ps1"
+Invoke-WebRequest https://raw.githubusercontent.com/xi-pengfei/czon_agent/main/deploy/bootstrap_windows.ps1 -OutFile $installer
+powershell -ExecutionPolicy Bypass -File $installer
+```
+
+脚本会自动从 GitHub 下载最新版到 `C:\czon_agent`，然后创建 Python 环境、安装依赖并创建系统管理员。
+
+如果 `C:\czon_agent` 已经存在，脚本会立即停止，不会覆盖数据库、配置或客户私有 Skills。
+
+## 方法二：先获取源码，再一键安装
 
 ### 第一步：获取程序，二选一
 
@@ -110,7 +124,7 @@ http://192.168.1.30:8000
 
 模型 API Key 只在管理页面配置，不要写入 `.env`。
 
-## 方法二：手工安装
+## 方法三：完全手工安装
 
 获取源码并进入项目目录后，在 PowerShell 中执行：
 

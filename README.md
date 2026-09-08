@@ -71,6 +71,8 @@ python main.py "帮我列出 workspace 下的文件"
 
 应用可直接提供完整 WebUI，也可以选择在 Ubuntu 前面增加 Nginx，用于标准端口、HTTPS 和反向代理。应用自身的登录负责用户、角色和数据权限，默认不再叠加 Nginx Basic Auth。部署步骤见 [Ubuntu 部署指南](DEPLOY_UBUNTU.md) 和 [Windows 部署指南](DEPLOY_WINDOWS.md)。
 
+Ubuntu 和 Windows 均支持在线一键安装：引导脚本会自动从 GitHub 下载最新版；客户现场不能访问 GitHub 时，仍可使用 ZIP 离线安装。
+
 ## 项目结构
 
 ```text

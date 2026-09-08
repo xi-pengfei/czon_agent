@@ -13,7 +13,21 @@
 
 GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装完成后单独放入客户服务器。
 
-## 方法一：一键安装（推荐）
+## 方法一：联网一键安装（推荐）
+
+服务器能够访问 GitHub 时，只需执行：
+
+```bash
+sudo apt update && sudo apt install -y curl
+curl -fsSL https://raw.githubusercontent.com/xi-pengfei/czon_agent/main/deploy/bootstrap_ubuntu.sh -o /tmp/czon_agent_install.sh
+sudo bash /tmp/czon_agent_install.sh
+```
+
+这三行命令会先准备下载工具，再自动从 GitHub 下载最新版，然后继续完成 Python、后台服务和可选 Nginx 安装。安装过程中只需要选择是否使用 Nginx，并创建第一个系统管理员。
+
+在线安装固定使用 `/opt/czon_agent`。如果这个目录已经存在，脚本会立即停止，不会覆盖数据库、配置或客户私有 Skills。
+
+## 方法二：先获取源码，再一键安装
 
 ### 第一步：获取程序，二选一
 
@@ -112,7 +126,7 @@ Nginx 不是程序运行的必需组件。
 
 本项目的 Nginx 只负责反向代理，不再提供第二套账号密码。用户、角色、权限和会话仍全部由 `czon_agent` 管理。
 
-## 方法二：手工安装
+## 方法三：完全手工安装
 
 获取源码并进入源码目录后执行：
 
