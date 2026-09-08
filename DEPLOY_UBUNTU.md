@@ -1,57 +1,37 @@
-# Ubuntu 部署指南
+# Ubuntu 手工部署指南
 
-适用于 Ubuntu 22.04、24.04 及之后版本。推荐使用“一键安装”；手工安装仅用于需要逐步检查的现场。
+适用于 Ubuntu 22.04、24.04 及之后版本。本文以手工安装为主，每一步都可以单独检查，适合首次部署和故障排查。
 
-## 部署前准备
+## 一键安装入口
 
-你需要：
-
-- 一台能够被企业内网访问的 Ubuntu 电脑或服务器。
-- 一个拥有 `sudo` 权限的 Ubuntu 账号。
-- 服务器的固定局域网 IP，例如 `192.168.1.20`。
-- 能够访问模型服务；使用 Ollama 时也可以连接企业内网模型。
-
-GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装完成后单独放入客户服务器。
-
-## 小白最快安装方式
-
-1. 从 GitHub 点击 `Code` → `Download ZIP`。
-2. 把 ZIP 上传到 Ubuntu 并解压。
-3. 进入解压后的文件夹。
-4. 在这个文件夹打开终端，执行 `bash INSTALL_UBUNTU.sh`。
-5. 输入 Ubuntu 的 sudo 密码，再创建系统管理员。
-6. 等待显示“安装完成”，然后打开脚本给出的网页地址。
-
-Ubuntu Server 通常没有桌面，所以不能可靠地双击脚本。用户只需要记住这一条命令：
+如果不需要逐步安装：从 GitHub 下载 ZIP 并解压，在解压目录打开终端，执行：
 
 ```bash
 bash INSTALL_UBUNTU.sh
 ```
 
-## 方法一：联网一键安装（推荐）
+安装过程需要输入 Ubuntu 账号的 `sudo` 密码，并创建第一个系统管理员。Ubuntu Server 通常没有图形桌面，因此不要依赖双击脚本。一键安装失败时，再按照下文手工处理。
 
-服务器能够访问 GitHub 时，只需执行：
+## 部署前准备
 
-```bash
-sudo apt update && sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/xi-pengfei/czon_agent/main/deploy/bootstrap_ubuntu.sh -o /tmp/czon_agent_install.sh
-sudo bash /tmp/czon_agent_install.sh
-```
+需要准备：
 
-这三行命令会先准备下载工具，再自动从 GitHub 下载最新版，然后继续完成 Python、后台服务和可选 Nginx 安装。安装过程中只需要选择是否使用 Nginx，并创建第一个系统管理员。
+- 一台能够被企业内网访问的 Ubuntu 服务器。
+- 一个拥有 `sudo` 权限的 Ubuntu 账号。
+- 服务器的固定局域网 IP，例如 `192.168.1.20`。
+- 能够访问所选模型服务；Ollama 等私有模型也可以位于企业内网。
 
-在线安装固定使用 `/opt/czon_agent`。如果这个目录已经存在，脚本会立即停止，不会覆盖数据库、配置或客户私有 Skills。
+GitHub 公共仓库不包含客户私有 Skills、业务凭据、模型密钥和运行数据。这些内容需要在基础程序安装后单独交付。
 
-## 方法二：先获取源码，再一键安装
+## 第一步：获取源码
 
-### 第一步：获取程序，二选一
+以下两种方式任选一种。
 
-#### A. 从 GitHub 网页下载
+### 方式 A：下载 ZIP
 
-1. 打开项目 GitHub 页面。
-2. 点击 `Code`，再点击 `Download ZIP`。
-3. 把 ZIP 文件上传到 Ubuntu，例如上传到当前账号的主目录。
-4. 执行：
+1. 在 GitHub 项目页面点击 `Code` → `Download ZIP`。
+2. 把 ZIP 上传到 Ubuntu 当前账号的主目录。
+3. 执行：
 
 ```bash
 sudo apt update
@@ -60,9 +40,9 @@ unzip czon_agent-main.zip
 cd czon_agent-main
 ```
 
-ZIP 文件名如果不同，请把命令中的名称改成实际文件名。
+如果文件名不同，请改成实际 ZIP 文件名。
 
-#### B. 使用 Git 命令下载
+### 方式 B：使用 Git
 
 ```bash
 sudo apt update
@@ -71,95 +51,64 @@ git clone https://github.com/xi-pengfei/czon_agent.git
 cd czon_agent
 ```
 
-### 第二步：运行一键安装脚本
-
-```bash
-bash INSTALL_UBUNTU.sh
-```
-
-脚本会自动完成：
-
-1. 安装 Python 和必要组件。
-2. 把程序安装到 `/opt/czon_agent`。
-3. 创建独立的 `czon_agent` 系统账号。
-4. 安装 Python 依赖。
-5. 创建第一个系统管理员。
-6. 注册开机自动运行的后台服务。
-7. 根据你的选择安装并配置 Nginx。
-8. 启动程序并检查运行状态。
-
-创建管理员时需要输入账号和至少 6 位的初始密码。首次登录后，系统会要求修改密码。
-
-### 第三步：打开网页
-
-- 安装 Nginx：访问 `http://服务器IP`
-- 不安装 Nginx：访问 `http://服务器IP:8000`
-
-例如服务器 IP 是 `192.168.1.20`：
-
-```text
-http://192.168.1.20
-```
-
-或者：
-
-```text
-http://192.168.1.20:8000
-```
-
-这里仅使用 `czon_agent` 自己的登录页面，不再增加 Nginx Basic Auth，不会出现两次登录。
-
-### 第四步：完成系统配置
-
-管理员登录后依次完成：
-
-1. 在“模型配置”中添加模型和 API Key，并执行连接测试。
-2. 创建组织部门。
-3. 创建角色并选择允许使用的 Skills、工具和模型。
-4. 创建用户并分配部门和角色。
-5. 安全交付客户私有 Skills，并放入 `/opt/czon_agent/skills/`。
-6. 私有 Skill 如需金蝶、PledgeBox 等凭据，将其写入 `/opt/czon_agent/.env`。
-
-模型 API Key 只在管理页面配置，不要写入 `.env`。
-
-## Nginx 要不要安装
-
-Nginx 不是程序运行的必需组件。
-
-不使用 Nginx 适合：
-
-- 仅在可信局域网内使用。
-- 可以接受地址中带有 `:8000`。
-- 暂时不配置 HTTPS。
-
-使用 Nginx 适合：
-
-- 希望直接使用 `http://服务器IP`，不显示端口号。
-- 需要配置 HTTPS。
-- 希望统一控制上传大小、访问日志和连接超时。
-- 后续可能在同一台服务器部署多个系统。
-
-本项目的 Nginx 只负责反向代理，不再提供第二套账号密码。用户、角色、权限和会话仍全部由 `czon_agent` 管理。
-
-## 方法三：完全手工安装
-
-获取源码并进入源码目录后执行：
+## 第二步：安装 Python
 
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip
+```
+
+检查版本：
+
+```bash
+python3 --version
+```
+
+建议使用 Python 3.11 或更高版本。
+
+## 第三步：创建运行账号和目录
+
+```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin czon_agent || true
 sudo mkdir -p /opt/czon_agent
 sudo cp -a . /opt/czon_agent/
 sudo chown -R czon_agent:czon_agent /opt/czon_agent
-sudo -u czon_agent python3 -m venv /opt/czon_agent/.venv
-sudo -u czon_agent /opt/czon_agent/.venv/bin/pip install -r /opt/czon_agent/requirements.txt
-sudo -u czon_agent touch /opt/czon_agent/.env
-sudo chmod 600 /opt/czon_agent/.env
-sudo -u czon_agent /opt/czon_agent/.venv/bin/python /opt/czon_agent/main.py setup-admin
+cd /opt/czon_agent
 ```
 
-注册后台服务：
+`czon_agent` 是专门运行程序的 Ubuntu 系统账号，不是网页登录账号。
+
+## 第四步：安装 Python 依赖
+
+```bash
+sudo -u czon_agent python3 -m venv /opt/czon_agent/.venv
+sudo -u czon_agent /opt/czon_agent/.venv/bin/python -m pip install --upgrade pip
+sudo -u czon_agent /opt/czon_agent/.venv/bin/python -m pip install -r /opt/czon_agent/requirements.txt
+```
+
+生产服务器不需要安装 Node.js。已经编译好的前端位于 `webui/`。
+
+## 第五步：创建运行目录
+
+```bash
+sudo mkdir -p /opt/czon_agent/data /opt/czon_agent/uploads /opt/czon_agent/workspace /opt/czon_agent/logs
+sudo touch /opt/czon_agent/.env
+sudo chown -R czon_agent:czon_agent /opt/czon_agent
+sudo chmod 600 /opt/czon_agent/.env
+```
+
+`.env` 只用于客户私有 Skill 的金蝶、PledgeBox 等业务凭据。模型 API Key 不写入 `.env`，应在网页管理页面配置。
+
+## 第六步：创建第一个管理员
+
+```bash
+cd /opt/czon_agent
+sudo -u czon_agent /opt/czon_agent/.venv/bin/python main.py setup-admin
+```
+
+根据提示输入管理员账号和至少 6 位的初始密码。这是 `czon_agent` 网页系统管理员，首次登录后必须修改初始密码。
+
+## 第七步：注册后台服务
 
 ```bash
 sudo cp /opt/czon_agent/deploy/systemd/czon_agent.service /etc/systemd/system/czon_agent.service
@@ -168,9 +117,30 @@ sudo systemctl enable --now czon_agent
 sudo systemctl status czon_agent --no-pager
 ```
 
-如果需要 Nginx：
+看到 `active (running)` 表示程序已经启动，并且以后会随 Ubuntu 自动启动。
+
+## 第八步：选择访问方式
+
+### 方式 A：不用 Nginx
+
+适用于可信局域网、暂时不需要 HTTPS，并且可以接受地址带 `:8000` 的情况。
+
+```text
+http://服务器IP:8000
+```
+
+如果启用了 UFW：
 
 ```bash
+sudo ufw allow 8000/tcp
+```
+
+### 方式 B：使用 Nginx
+
+Nginx 不是必需组件。它用于标准 `80/443` 端口、HTTPS、访问日志和稳定转发流式输出。
+
+```bash
+sudo apt update
 sudo apt install -y nginx
 sudo cp /opt/czon_agent/deploy/nginx/czon_agent.conf /etc/nginx/sites-available/czon_agent
 sudo ln -sf /etc/nginx/sites-available/czon_agent /etc/nginx/sites-enabled/czon_agent
@@ -180,62 +150,46 @@ sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 ```
 
-## 防火墙
+然后访问 `http://服务器IP`。Nginx 不提供 Basic Auth，不会出现两次登录；用户、角色和权限全部由 `czon_agent` 管理。
 
-如果服务器启用了 UFW，请根据部署方式选择一组命令。
-
-使用 Nginx：
+如果启用了 UFW：
 
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 ```
 
-不使用 Nginx：
+不要执行 `sudo ufw enable`，除非已经确认 SSH 端口不会被拦截。正式生产启用全站 HTTPS 后，把 `config.yaml` 中的 `cookie_secure` 改为 `true`，再重启服务。
+
+## 第九步：完成网页配置
+
+管理员登录后配置模型、组织部门、角色、用户和权限。客户私有 Skills 单独放入 `/opt/czon_agent/skills/`；其业务凭据填写在 `/opt/czon_agent/.env`。
+
+## 日常维护
 
 ```bash
-sudo ufw allow 8000/tcp
-```
-
-企业现场有独立防火墙时，还需要由网络管理员放行对应端口。不要执行 `sudo ufw enable`，除非已经确认 SSH 端口不会被拦截。
-
-## 日常命令
-
-查看运行状态：
-
-```bash
+# 查看状态
 sudo systemctl status czon_agent --no-pager
-```
 
-重启程序：
-
-```bash
+# 重启程序
 sudo systemctl restart czon_agent
-```
 
-查看实时日志：
-
-```bash
+# 查看实时日志
 sudo journalctl -u czon_agent -f
-```
 
-检查并重载 Nginx：
-
-```bash
+# 检查并重载 Nginx
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ## 常见问题
 
 - 网页打不开：检查服务器 IP、服务状态和防火墙端口。
-- 出现 `502 Bad Gateway`：执行 `sudo systemctl status czon_agent --no-pager`。
-- 模型不可用：管理员进入“模型配置”，重新测试模型连接。
-- 其他电脑不能访问：确认 `config.yaml` 中 `webui.host` 是 `0.0.0.0`。
-- 修改配置后没有生效：执行 `sudo systemctl restart czon_agent`。
+- 出现 `502 Bad Gateway`：检查 `sudo systemctl status czon_agent --no-pager`。
+- 其他电脑无法访问：确认 `config.yaml` 中 `webui.host` 为 `0.0.0.0`。
+- 模型不可用：管理员进入“模型配置”，重新执行连接测试。
+- 修改配置后未生效：执行 `sudo systemctl restart czon_agent`。
 
 ## 必须备份的数据
-
-以下内容必须一起备份：
 
 ```text
 /opt/czon_agent/data/czon_agent.db
