@@ -18,6 +18,7 @@ skills/*/data/
 *.db-journal
 *.key
 webui.log
+/start_czon_agent.cmd
 !uploads/.gitkeep
 !logs/.gitkeep
 !data/.gitkeep

@@ -69,7 +69,7 @@ python main.py "帮我列出 workspace 下的文件"
 
 ## 部署方式
 
-应用可直接提供完整 WebUI，也可以选择在前面增加 Nginx。随附模板启用 Nginx Basic Auth 作为第一层入口保护，应用登录负责具体用户、角色和数据权限。详见 [DEPLOY_NGINX.md](DEPLOY_NGINX.md)。
+应用可直接提供完整 WebUI，也可以选择在 Ubuntu 前面增加 Nginx，用于标准端口、HTTPS 和反向代理。应用自身的登录负责用户、角色和数据权限，默认不再叠加 Nginx Basic Auth。部署步骤见 [Ubuntu 部署指南](DEPLOY_UBUNTU.md) 和 [Windows 部署指南](DEPLOY_WINDOWS.md)。
 
 ## 项目结构
 
