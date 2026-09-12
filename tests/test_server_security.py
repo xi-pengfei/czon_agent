@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+import httpx
+import openai
 
 from adapters.server import create_app
 from core.auth_store import AuthStore, DEFAULT_ROLES
@@ -55,6 +57,11 @@ class ArtifactAgent:
     def run(self, text, **kwargs):
         (self.workspace / "result.xlsx").write_bytes(b"workbook-result")
         return "exported", []
+
+
+class TimeoutAgent:
+    def run(self, text, **kwargs):
+        raise openai.APITimeoutError(request=httpx.Request("POST", "https://llm.invalid/chat/completions"))
 
 
 class ServerSecurityTests(unittest.TestCase):
@@ -411,6 +418,16 @@ class ServerSecurityTests(unittest.TestCase):
         thread = threading.Thread(target=request_stream)
         thread.start()
         self.assertTrue(started.wait(timeout=2))
+        duplicate = client.post(
+            "/api/chat/stream",
+            headers=headers,
+            json={
+                "text": "again", "attachments": [], "provider": "qwen",
+                "session_id": self.session_id, "run_id": "e" * 32,
+            },
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(duplicate.json()["detail"], "当前会话已有任务正在运行")
         stop = client.post(
             "/api/chat/stop",
             headers=headers,
@@ -420,6 +437,32 @@ class ServerSecurityTests(unittest.TestCase):
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
         self.assertIn("event: agent_stopped", result["response"].text)
+
+    def test_model_timeout_returns_safe_stream_error(self):
+        root = Path(__file__).resolve().parents[1]
+        db_path = Path(self.temp_dir.name) / "timeout_sessions.db"
+        auth = AuthStore(db_path)
+        auth.seed_roles(DEFAULT_ROLES)
+        auth.create_user("timeout_user", "TimeoutPassword123", "standard", must_change=False)
+        app = create_app(
+            lambda provider, owner: TimeoutAgent(), workspace_dir=self.temp_dir.name,
+            project_root=root, session_db_path=db_path, auth_store=auth,
+        )
+        client = TestClient(app)
+        login = client.post("/api/auth/login", json={"username": "timeout_user", "password": "TimeoutPassword123"})
+        response = client.post(
+            "/api/chat/stream",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+            json={
+                "text": "hello", "attachments": [], "provider": "qwen",
+                "session_id": "8" * 32, "run_id": "9" * 32,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: agent_error", response.text)
+        self.assertIn("model_timeout", response.text)
+        self.assertIn("模型服务响应超时", response.text)
+        self.assertNotIn("Traceback", response.text)
 
     def test_tool_progress_is_forwarded_as_sse(self):
         root = Path(__file__).resolve().parents[1]

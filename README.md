@@ -36,7 +36,7 @@ python main.py "帮我列出 workspace 下的文件"
 
 - `active_provider`：CLI 默认模型。
 - `skills`、`workspace`：目录和全局 Skill 开关。
-- `agent`：总运行时间、连续异常和模型请求超时。
+- `agent`：总运行时间、连续异常、模型连接/读取/写入超时和有限重试。
 - `tool_policy`：底层工具安全策略。
 - `webui.host`、`webui.port`：监听地址和端口。
 - `webui.session_db`：用户、权限、模型、审计和会话数据库。

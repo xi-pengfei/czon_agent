@@ -73,7 +73,10 @@ class LLM:
         model: str,
         base_url: str,
         supports_vision: bool,
-        request_timeout: int = 120,
+        connect_timeout: int = 10,
+        read_timeout: int = 60,
+        write_timeout: int = 30,
+        max_retries: int = 1,
     ):
         self.provider = provider
         self._supports_vision = supports_vision
@@ -81,7 +84,16 @@ class LLM:
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            http_client=httpx.Client(proxy=None, timeout=request_timeout),
+            max_retries=max_retries,
+            http_client=httpx.Client(
+                proxy=None,
+                timeout=httpx.Timeout(
+                    connect=connect_timeout,
+                    read=read_timeout,
+                    write=write_timeout,
+                    pool=connect_timeout,
+                ),
+            ),
         )
         logger.info("LLM 初始化：provider=%s, model=%s", provider, self.model)
 
@@ -144,14 +156,29 @@ def make_llm_from_config(config: dict, project_root: Path | None = None) -> LLM:
     api_key = cfg.get("api_key")
     if not api_key:
         raise RuntimeError("当前模型尚未配置 API Key")
-    timeout = config.get("agent", {}).get("llm_request_timeout_seconds")
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
-        raise RuntimeError("config.yaml 中 agent.llm_request_timeout_seconds 必须是正整数")
+    agent_config = config.get("agent", {})
+    legacy_timeout = _positive_config_int(agent_config, "llm_request_timeout_seconds", default=60)
+    connect_timeout = _positive_config_int(agent_config, "llm_connect_timeout_seconds", default=10)
+    read_timeout = _positive_config_int(agent_config, "llm_read_timeout_seconds", default=legacy_timeout)
+    write_timeout = _positive_config_int(agent_config, "llm_write_timeout_seconds", default=30)
+    max_retries = agent_config.get("llm_max_retries", 1)
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 3:
+        raise RuntimeError("config.yaml 中 agent.llm_max_retries 必须是 0 到 3 之间的整数")
     return LLM(
         provider=provider,
         api_key=api_key,
         model=cfg["model"],
         base_url=cfg["base_url"],
         supports_vision=cfg["supports_vision"],
-        request_timeout=timeout,
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
+        write_timeout=write_timeout,
+        max_retries=max_retries,
     )
+
+
+def _positive_config_int(config: dict, key: str, default: int) -> int:
+    value = config.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"config.yaml 中 agent.{key} 必须是正整数")
+    return value

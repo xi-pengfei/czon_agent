@@ -46,6 +46,48 @@ class ModelConfigTests(unittest.TestCase):
             self.assertEqual(llm.provider, "internal_model")
             self.assertEqual(llm.model, "company-model")
 
+    def test_model_uses_split_timeouts_and_bounded_retries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = AuthStore(root / "data" / "models.db")
+            store.upsert_model({
+                "name": "internal_model", "display_name": "Internal",
+                "base_url": "http://llm.internal/v1", "model": "company-model",
+                "api_key": "test-secret", "supports_vision": False, "enabled": True,
+            }, actor="test")
+            config = {
+                "active_provider": "internal_model",
+                "agent": {
+                    "llm_connect_timeout_seconds": 7,
+                    "llm_read_timeout_seconds": 61,
+                    "llm_write_timeout_seconds": 19,
+                    "llm_max_retries": 1,
+                },
+                "webui": {"session_db": "./data/models.db"},
+            }
+            with patch("core.llm.httpx.Client") as http_client, patch("core.llm.OpenAI") as openai_client:
+                make_llm_from_config(config, root)
+
+            timeout = http_client.call_args.kwargs["timeout"]
+            self.assertEqual((timeout.connect, timeout.read, timeout.write, timeout.pool), (7, 61, 19, 7))
+            self.assertEqual(openai_client.call_args.kwargs["max_retries"], 1)
+
+    def test_legacy_request_timeout_remains_supported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = AuthStore(root / "data" / "models.db")
+            store.upsert_model({
+                "name": "legacy", "display_name": "Legacy", "base_url": "http://llm.internal/v1",
+                "model": "legacy", "api_key": "test-secret", "supports_vision": False, "enabled": True,
+            }, actor="test")
+            config = {
+                "active_provider": "legacy", "agent": {"llm_request_timeout_seconds": 22},
+                "webui": {"session_db": "./data/models.db"},
+            }
+            with patch("core.llm.httpx.Client") as http_client, patch("core.llm.OpenAI"):
+                make_llm_from_config(config, root)
+            self.assertEqual(http_client.call_args.kwargs["timeout"].read, 22)
+
     def test_runtime_provider_environment_overrides_cli_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

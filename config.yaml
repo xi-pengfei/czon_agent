@@ -14,7 +14,12 @@ workspace:
 agent:
   max_runtime_seconds: 900
   max_consecutive_errors: 3
-  llm_request_timeout_seconds: 120
+  # 模型连接、连续无数据读取和请求写入分别限时；避免外部模型长时间无响应。
+  llm_connect_timeout_seconds: 10
+  llm_read_timeout_seconds: 60
+  llm_write_timeout_seconds: 30
+  # 仅在流式响应开始前重试；SDK 不会重放已经开始消费的流。
+  llm_max_retries: 1
   extra_rules:
     # 文件操作
     - "For ambiguous local file names, search likely locations first: current directory, workspace, uploads, and ~/Desktop."

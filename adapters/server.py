@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+import openai
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -44,6 +45,22 @@ MAX_ARTIFACT_COUNT = 50
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
 SSE_KEEPALIVE_SECONDS = 10
 AUTH_COOKIE = "czon_agent_session"
+
+
+def _model_error_detail(exc: Exception) -> tuple[str, str] | None:
+    if isinstance(exc, openai.APITimeoutError):
+        return "model_timeout", "模型服务响应超时，请稍后重试或切换模型"
+    if isinstance(exc, openai.RateLimitError):
+        return "model_rate_limit", "模型服务当前繁忙或额度受限，请稍后重试"
+    if isinstance(exc, openai.APIConnectionError):
+        return "model_connection", "无法连接模型服务，请检查网络或模型地址"
+    if isinstance(exc, openai.APIStatusError):
+        if exc.status_code in {401, 403}:
+            return "model_auth", "模型认证失败，请联系管理员检查 API Key"
+        if exc.status_code >= 500:
+            return "model_unavailable", "模型服务暂时不可用，请稍后重试或切换模型"
+        return "model_request", "模型拒绝了本次请求，请联系管理员检查模型配置"
+    return None
 
 
 def _validate_role_name(value: str) -> str:
@@ -1024,7 +1041,12 @@ def create_app(
             raise HTTPException(status_code=408, detail="任务执行超时，已停止")
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
+            model_error = _model_error_detail(exc)
+            if model_error:
+                error_id = uuid.uuid4().hex[:8]
+                logger.exception("/api/chat 模型请求失败，错误编号=%s", error_id)
+                raise HTTPException(status_code=503, detail=f"{model_error[1]}（错误编号：{error_id}）")
             logger.exception("/api/chat 执行失败")
             raise HTTPException(status_code=500, detail="请求处理失败，请稍后重试")
 
@@ -1100,9 +1122,20 @@ def create_app(
                 events.put(("agent_stopped", {"message": "任务已停止"}))
             except AgentTimeout:
                 events.put(("agent_timeout", {"message": "任务执行超时，已停止"}))
-            except Exception:
-                logger.exception("/api/chat/stream 执行失败")
-                events.put(("agent_error", {"error": "请求处理失败，请稍后重试"}))
+            except Exception as exc:
+                error_id = uuid.uuid4().hex[:8]
+                model_error = _model_error_detail(exc)
+                logger.exception("/api/chat/stream 执行失败，错误编号=%s", error_id)
+                if model_error:
+                    events.put(("agent_error", {
+                        "code": model_error[0],
+                        "error": f"{model_error[1]}（错误编号：{error_id}）",
+                    }))
+                else:
+                    events.put(("agent_error", {
+                        "code": "internal_error",
+                        "error": f"请求处理失败，请稍后重试（错误编号：{error_id}）",
+                    }))
             finally:
                 events.put(None)
 
