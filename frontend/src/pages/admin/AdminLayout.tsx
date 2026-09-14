@@ -7,6 +7,7 @@ const navigation = [
   { to: "/admin/departments", label: "组织架构" },
   { to: "/admin/roles", label: "角色权限" },
   { to: "/admin/models", label: "模型配置" },
+  { to: "/admin/skills", label: "Skills 管理" },
   { to: "/admin/logs", label: "日志中心" },
 ];
 

@@ -117,6 +117,12 @@ class AuthTests(unittest.TestCase):
             200,
         )
 
+    def test_mutation_without_session_requires_login(self):
+        client = TestClient(self.client.app)
+        response = client.post("/api/auth/logout", headers={"X-CSRF-Token": "stale-token"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "请先登录")
+
     def test_initial_password_must_be_changed(self):
         self.store.create_user("new_admin", "InitialPassword123", "administrator", must_change=True)
         client = TestClient(self.client.app)

@@ -104,6 +104,11 @@ class AuthStore:
                     supports_streaming INTEGER NOT NULL DEFAULT 1,
                     enabled INTEGER NOT NULL DEFAULT 1
                 );
+                CREATE TABLE IF NOT EXISTS app_skill_settings (
+                    name TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
             """)
             columns = {row[1] for row in connection.execute("PRAGMA table_info(app_models)")}
             if "api_key_ciphertext" not in columns:
@@ -397,6 +402,28 @@ class AuthStore:
                 models=excluded.models,is_admin=excluded.is_admin""",
                 (name, json.dumps(skills), json.dumps(tools), json.dumps(models), int(is_admin)))
             self._audit(connection, actor, "upsert_role", name)
+
+    def list_skill_settings(self):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT name,enabled,updated_at FROM app_skill_settings ORDER BY name"
+            ).fetchall()
+        return {row["name"]: {"enabled": bool(row["enabled"]), "updated_at": row["updated_at"]} for row in rows}
+
+    def set_skill_enabled(self, name: str, enabled: bool, actor: str):
+        timestamp = _now().isoformat(timespec="seconds")
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO app_skill_settings(name,enabled,updated_at) VALUES(?,?,?)
+                   ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at""",
+                (name, int(enabled), timestamp),
+            )
+            self._audit(connection, actor, "enable_skill" if enabled else "disable_skill", name)
+
+    def remove_skill_setting(self, name: str, actor: str):
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM app_skill_settings WHERE name=?", (name,))
+            self._audit(connection, actor, "delete_skill", name)
 
     def list_models(self, include_disabled=False):
         sql = """SELECT name,display_name,base_url,model,api_key_ciphertext,

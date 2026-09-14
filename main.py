@@ -127,6 +127,10 @@ def cmd_webui(config: dict, args):
     auth_store = AuthStore(db_path)
     auth_store.seed_roles(DEFAULT_ROLES)
     auth_store.seed_models(DEFAULT_MODELS)
+    skills_cfg = config.get("skills") or {}
+    skills_dir = Path(skills_cfg.get("dir", "./skills"))
+    if not skills_dir.is_absolute():
+        skills_dir = PROJECT_ROOT / skills_dir
 
     def access_resolver(username: str):
         access = auth_store.get_access(username)
@@ -141,6 +145,11 @@ def cmd_webui(config: dict, args):
             **config,
             "current_user": username,
             "current_access": access,
+            "skills": {
+                **skills_cfg,
+                "dir": str(skills_dir),
+                "enabled": permitted_skill_names(username),
+            },
             "agent": {
                 **(config.get("agent") or {}),
                 "extra_rules": [
@@ -151,11 +160,21 @@ def cmd_webui(config: dict, args):
         }
         return build_agent(merged_config, provider_override=provider)
 
-    def skill_catalog_provider(username: str):
+    def permitted_skill_names(username: str) -> list[str]:
         access = access_resolver(username)
-        skills_cfg = config.get("skills") or {}
-        enabled = allowed_names(skills_cfg.get("enabled"), access.skills)
-        loader = SkillLoader(Path(skills_cfg.get("dir", "./skills")), enabled=enabled)
+        loader = SkillLoader(skills_dir, enabled=None)
+        loader.scan()
+        names = list(loader.catalog)
+        configured = skills_cfg.get("enabled")
+        if configured is not None:
+            configured_set = set(configured)
+            names = [name for name in names if name in configured_set]
+        settings = auth_store.list_skill_settings()
+        names = [name for name in names if settings.get(name, {}).get("enabled", True)]
+        return allowed_names(names, access.skills)
+
+    def skill_catalog_provider(username: str):
+        loader = SkillLoader(skills_dir, enabled=permitted_skill_names(username))
         loader.scan()
         return [
             {"name": meta.name, "description": meta.description}
@@ -186,6 +205,7 @@ def cmd_webui(config: dict, args):
         session_db_path=session_db,
         auth_store=auth_store,
         cookie_secure=bool(webui_cfg.get("cookie_secure", False)),
+        skills_dir=str(skills_dir),
         skill_catalog_provider=skill_catalog_provider,
         provider_catalog_provider=provider_catalog_provider,
     )

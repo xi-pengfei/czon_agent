@@ -1,7 +1,14 @@
 let csrfToken = "";
+export const AUTH_EXPIRED_EVENT = "czon:auth-expired";
 
 export function setCsrfToken(value: string) {
   csrfToken = value;
+}
+
+function handleUnauthorized(status: number, url: string) {
+  if (status !== 401 || url === "/api/auth/login") return;
+  csrfToken = "";
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
 }
 
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
@@ -13,6 +20,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   }
   const response = await fetch(url, { ...options, headers });
   const data = await response.json().catch(() => ({}));
+  handleUnauthorized(response.status, url);
   if (!response.ok) throw new Error(data.detail || `请求失败 (${response.status})`);
   return data as T;
 }
@@ -24,7 +32,9 @@ export async function apiResponse(url: string, options: RequestInit = {}) {
   if (csrfToken && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     headers.set("X-CSRF-Token", csrfToken);
   }
-  return fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers });
+  handleUnauthorized(response.status, url);
+  return response;
 }
 
 export function uploadFile(file: File, onProgress: (percent: number) => void): Promise<unknown> {
@@ -36,7 +46,13 @@ export function uploadFile(file: File, onProgress: (percent: number) => void): P
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     };
     request.onload = () => {
-      const data = JSON.parse(request.responseText || "{}");
+      let data: { detail?: string } = {};
+      try {
+        data = JSON.parse(request.responseText || "{}");
+      } catch {
+        // Keep the generic upload error when a proxy returns a non-JSON response.
+      }
+      handleUnauthorized(request.status, "/api/upload");
       if (request.status >= 200 && request.status < 300) resolve(data);
       else reject(new Error(data.detail || "上传失败"));
     };

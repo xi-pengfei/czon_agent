@@ -25,6 +25,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.agent import AgentStopped, AgentTimeout
 from core.session_store import SessionStore
+from core.skills import (
+    MAX_SKILL_ARCHIVE_BYTES,
+    SkillArchiveError,
+    delete_skill,
+    describe_skills,
+    install_skill_archive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +219,10 @@ class AdminUserUpdate(StrictModel):
 
 class AdminPasswordReset(StrictModel):
     password: str = Field(min_length=6, max_length=256)
+
+
+class AdminSkillUpdate(StrictModel):
+    enabled: bool
 
 
 class AdminRole(StrictModel):
@@ -424,6 +435,7 @@ def create_app(
     project_root: Path | None = None,
     session_db_path: str = "./data/czon_agent.db",
     cookie_secure: bool = False,
+    skills_dir: str = "./skills",
     skill_catalog_provider=None,
     provider_catalog_provider=None,
 ):
@@ -432,6 +444,11 @@ def create_app(
     log_dir = root / "logs"
     uploads_root = root / "uploads"
     uploads_root.mkdir(parents=True, exist_ok=True)
+    skills_root = Path(skills_dir)
+    if not skills_root.is_absolute():
+        skills_root = root / skills_root
+    skills_root = skills_root.resolve()
+    skills_root.mkdir(parents=True, exist_ok=True)
     if Path(workspace_dir).is_absolute():
         workspace_root = Path(workspace_dir).resolve()
     else:
@@ -468,9 +485,15 @@ def create_app(
                 response = JSONResponse(status_code=403, content={"detail": "请先修改初始密码"})
         if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             if response is None and request.url.path != "/api/auth/login":
-                supplied = request.headers.get("X-CSRF-Token", "")
-                if not identity or not supplied or not secrets_compare(supplied, identity["csrf_token"]):
-                    response = JSONResponse(status_code=403, content={"detail": "登录已过期或安全校验失败"})
+                if identity is None:
+                    response = JSONResponse(status_code=401, content={"detail": "请先登录"})
+                else:
+                    supplied = request.headers.get("X-CSRF-Token", "")
+                    if not supplied or not secrets_compare(supplied, identity["csrf_token"]):
+                        response = JSONResponse(
+                            status_code=403,
+                            content={"detail": "安全校验失败，请刷新页面后重试"},
+                        )
         if response is None:
             response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -502,6 +525,9 @@ def create_app(
         if skill_catalog_provider is None:
             return []
         return skill_catalog_provider(owner)
+
+    def managed_skills() -> list[dict]:
+        return describe_skills(skills_root, auth_store.list_skill_settings())
 
     def available_providers(owner: str) -> list[dict]:
         if provider_catalog_provider is None:
@@ -827,6 +853,64 @@ def create_app(
             "tools": ["read", "write", "bash", "activate_skill"],
             "models": [item["name"] for item in auth_store.list_models(include_disabled=True)],
         }
+
+    @app.get("/api/admin/skills")
+    def admin_skills(request: Request):
+        require_admin(request)
+        return {"skills": managed_skills()}
+
+    @app.post("/api/admin/skills/rescan")
+    def admin_rescan_skills(request: Request):
+        require_admin(request)
+        return {"skills": managed_skills()}
+
+    @app.put("/api/admin/skills/{name}")
+    def admin_update_skill(name: str, req: AdminSkillUpdate, request: Request):
+        actor = require_admin(request)["username"]
+        known = {item["name"] for item in managed_skills()}
+        if name not in known:
+            raise HTTPException(status_code=404, detail="Skill 不存在")
+        auth_store.set_skill_enabled(name, req.enabled, actor)
+        return {"ok": True}
+
+    @app.post("/api/admin/skills/upload")
+    async def admin_upload_skill(request: Request, file: UploadFile = File(...)):
+        actor = require_admin(request)["username"]
+        if not file.filename or not file.filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="请选择 ZIP 格式的 Skill 压缩包")
+        archive_path = skills_root.parent / f".skill-archive-{uuid.uuid4().hex}.zip"
+        size = 0
+        try:
+            with archive_path.open("xb") as output:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_SKILL_ARCHIVE_BYTES:
+                        raise HTTPException(status_code=413, detail="Skill 压缩包不能超过 200 MB")
+                    output.write(chunk)
+            try:
+                name = install_skill_archive(archive_path, skills_root)
+            except SkillArchiveError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            auth_store.record_audit(actor, "upload_skill", name)
+            return {"ok": True, "name": name}
+        finally:
+            await file.close()
+            archive_path.unlink(missing_ok=True)
+
+    @app.delete("/api/admin/skills/{name}")
+    def admin_delete_skill(name: str, request: Request):
+        actor = require_admin(request)["username"]
+        item = next((item for item in managed_skills() if item["name"] == name), None)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Skill 不存在")
+        if item["enabled"]:
+            raise HTTPException(status_code=409, detail="请先停用 Skill，再执行删除")
+        try:
+            delete_skill(skills_root, name)
+        except (KeyError, ValueError, OSError):
+            raise HTTPException(status_code=400, detail="无法安全删除该 Skill")
+        auth_store.remove_skill_setting(name, actor)
+        return {"ok": True}
 
     @app.put("/api/admin/roles/{name}")
     def admin_save_role(name: str, req: AdminRole, request: Request):

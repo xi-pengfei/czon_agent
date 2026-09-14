@@ -1,7 +1,9 @@
+import io
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -11,6 +13,7 @@ import openai
 from adapters.server import create_app
 from core.auth_store import AuthStore, DEFAULT_ROLES
 from core.agent import AgentStopped
+from main import cmd_webui
 
 
 class DummyAgent:
@@ -378,6 +381,126 @@ class ServerSecurityTests(unittest.TestCase):
             },
         )
         self.assertEqual(allowed.status_code, 200)
+
+    def test_skill_management_is_admin_only_and_requires_disable_before_delete(self):
+        root = Path(self.temp_dir.name) / "skill-admin-root"
+        skills = root / "skills"
+        skill = skills / "sample-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: sample-skill\ndescription: Sample skill\n---\nInstructions\n",
+            encoding="utf-8",
+        )
+        auth = AuthStore(root / "skills.db")
+        auth.seed_roles(DEFAULT_ROLES)
+        auth.create_user("skill_admin", "SkillAdmin123", "administrator", must_change=False)
+        auth.create_user("skill_reader", "SkillReader123", "standard", must_change=False)
+        app = create_app(
+            lambda provider, owner: DummyAgent(), auth_store=auth,
+            workspace_dir=root / "workspace", project_root=root,
+            session_db_path=root / "skills.db", skills_dir=skills,
+        )
+        admin = TestClient(app)
+        login = admin.post("/api/auth/login", json={"username": "skill_admin", "password": "SkillAdmin123"})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        reader = TestClient(app)
+        reader_login = reader.post("/api/auth/login", json={"username": "skill_reader", "password": "SkillReader123"})
+        reader_headers = {"X-CSRF-Token": reader_login.json()["csrf_token"]}
+
+        self.assertEqual(reader.get("/api/admin/skills").status_code, 403)
+        self.assertEqual(reader.post("/api/admin/skills/rescan", headers=reader_headers).status_code, 403)
+        listed = admin.get("/api/admin/skills").json()["skills"]
+        self.assertEqual(listed[0]["name"], "sample-skill")
+        self.assertTrue(listed[0]["enabled"])
+        self.assertEqual(admin.delete("/api/admin/skills/sample-skill", headers=headers).status_code, 409)
+        disabled = admin.put(
+            "/api/admin/skills/sample-skill", headers=headers, json={"enabled": False},
+        )
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(auth.list_skill_settings()["sample-skill"]["enabled"])
+        self.assertEqual(admin.delete("/api/admin/skills/sample-skill", headers=headers).status_code, 200)
+        self.assertFalse(skill.exists())
+
+    def test_skill_zip_upload_validates_layout_and_blocks_path_traversal(self):
+        root = Path(self.temp_dir.name) / "skill-upload-root"
+        skills = root / "skills"
+        auth = AuthStore(root / "skills.db")
+        auth.seed_roles(DEFAULT_ROLES)
+        auth.create_user("upload_admin", "UploadAdmin123", "administrator", must_change=False)
+        app = create_app(
+            lambda provider, owner: DummyAgent(), auth_store=auth,
+            workspace_dir=root / "workspace", project_root=root,
+            session_db_path=root / "skills.db", skills_dir=skills,
+        )
+        client = TestClient(app)
+        login = client.post("/api/auth/login", json={"username": "upload_admin", "password": "UploadAdmin123"})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+        valid = io.BytesIO()
+        with zipfile.ZipFile(valid, "w") as archive:
+            archive.writestr(
+                "uploaded-skill/SKILL.md",
+                "---\nname: uploaded-skill\ndescription: Uploaded skill\n---\nInstructions\n",
+            )
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("uploaded.zip", valid.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((skills / "uploaded-skill" / "SKILL.md").is_file())
+
+        malicious = io.BytesIO()
+        with zipfile.ZipFile(malicious, "w") as archive:
+            archive.writestr("../outside.txt", "unsafe")
+            archive.writestr(
+                "SKILL.md", "---\nname: bad-skill\ndescription: Bad skill\n---\nInstructions\n",
+            )
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("bad.zip", malicious.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse((root / "outside.txt").exists())
+
+    def test_disabled_skill_is_removed_from_webui_catalog(self):
+        root = Path(self.temp_dir.name) / "skill-runtime-root"
+        skill = root / "skills" / "runtime-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: runtime-skill\ndescription: Runtime skill\n---\nInstructions\n",
+            encoding="utf-8",
+        )
+        db_path = root / "runtime.db"
+        config = {
+            "active_provider": "qwen",
+            "skills": {"dir": str(root / "skills"), "enabled": None},
+            "workspace": {"dir": str(root / "workspace")},
+            "agent": {
+                "max_runtime_seconds": 60, "max_consecutive_errors": 3,
+                "llm_connect_timeout_seconds": 5, "llm_read_timeout_seconds": 5,
+                "llm_write_timeout_seconds": 5, "llm_max_retries": 0,
+            },
+            "tool_policy": {"default": "allow"},
+            "webui": {
+                "host": "127.0.0.1", "port": 8000, "session_db": str(db_path),
+                "cookie_secure": False,
+            },
+        }
+        with patch("uvicorn.run") as run:
+            cmd_webui(config, None)
+        app = run.call_args.args[0]
+        auth = AuthStore(db_path)
+        auth.create_user("runtime_admin", "RuntimeAdmin123", "administrator", must_change=False)
+        client = TestClient(app)
+        login = client.post("/api/auth/login", json={"username": "runtime_admin", "password": "RuntimeAdmin123"})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+        self.assertEqual([item["name"] for item in client.get("/api/skills").json()["skills"]], ["runtime-skill"])
+        response = client.put(
+            "/api/admin/skills/runtime-skill", headers=headers, json={"enabled": False},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.get("/api/skills").json()["skills"], [])
 
     def test_running_stream_can_be_stopped(self):
         started = threading.Event()

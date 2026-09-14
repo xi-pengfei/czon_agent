@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { api, setCsrfToken } from "./api";
+import { api, AUTH_EXPIRED_EVENT, setCsrfToken } from "./api";
 import { AuthView } from "./components/AuthView";
 import { ChatPage } from "./pages/ChatPage";
 import { AdminLayout } from "./pages/admin/AdminLayout";
@@ -9,18 +9,22 @@ import { RolesPage } from "./pages/admin/RolesPage";
 import { ModelsPage } from "./pages/admin/ModelsPage";
 import { LogsPage } from "./pages/admin/LogsPage";
 import { DepartmentsPage } from "./pages/admin/DepartmentsPage";
+import { SkillsPage } from "./pages/admin/SkillsPage";
 import type { Identity } from "./types";
 
 export default function App() {
   const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
 
   useEffect(() => {
+    const handleAuthExpired = () => setIdentity(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
     api<Identity>("/api/me", { cache: "no-store" })
       .then((value) => {
         setCsrfToken(value.csrf_token);
         setIdentity(value);
       })
       .catch(() => setIdentity(null));
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   }, []);
 
   if (identity === undefined) return <div className="boot-screen"><span className="spinner" /></div>;
@@ -38,6 +42,7 @@ export default function App() {
           <Route path="departments" element={<DepartmentsPage />} />
           <Route path="roles" element={<RolesPage />} />
           <Route path="models" element={<ModelsPage />} />
+          <Route path="skills" element={<SkillsPage />} />
           <Route path="logs" element={<LogsPage />} />
         </Route>
       )}
