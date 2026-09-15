@@ -69,6 +69,17 @@ export function randomId() {
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+export function parseSseEvent(chunk: string): { name: string; data: Record<string, unknown> } | null {
+  let name = "message";
+  const lines: string[] = [];
+  for (const line of chunk.split("\n")) {
+    if (line.startsWith("event:")) name = line.slice(6).trim();
+    if (line.startsWith("data:")) lines.push(line.slice(5).trimStart());
+  }
+  if (!lines.length) return null;
+  try { return { name, data: JSON.parse(lines.join("\n")) }; } catch { return null; }
+}
+
 export function formatTime(value?: string) {
   if (!value) return "-";
   return new Intl.DateTimeFormat("zh-CN", {

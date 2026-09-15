@@ -1,11 +1,13 @@
 """
 Skill 扫描与加载：遵守 agentskills.io SKILL.md 规范
 """
+import ast
 import logging
 import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -26,6 +28,33 @@ _WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in rang
 MAX_SKILL_ARCHIVE_FILES = 5_000
 MAX_SKILL_ARCHIVE_BYTES = 200 * 1024 * 1024
 MAX_SKILL_UNPACKED_BYTES = 500 * 1024 * 1024
+_ALLOWED_ROOT_ITEMS = {"SKILL.md", "scripts", "references", "assets"}
+_IGNORED_NAMES = {".DS_Store", "__pycache__"}
+_TEXT_SUFFIXES = {
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".py", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".js", ".ts",
+    ".csv", ".xml", ".html", ".css",
+}
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|password)\b"
+        r"\s*[:=]\s*['\"]?(?!\$|\{|<|REPLACE|YOUR_|ENV_|os\.)[A-Za-z0-9_./+=-]{12,}"
+    ),
+)
+_PROVIDER_KEY_NAMES = re.compile(r"\b(?:DEEPSEEK|MOONSHOT|DASHSCOPE|OPENAI|ANTHROPIC)_API_KEY\b")
+_DEPENDENCY_INSTALL = re.compile(
+    r"(?i)(?:^|[;&|]\s*)(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+install\b|"
+    r"\bnpm\s+install\b|\byarn\s+add\b|\bpnpm\s+add\b"
+)
+_DANGEROUS_COMMAND = re.compile(
+    r"(?i)(?:^|[;&|]\s*)(?:sudo\b|shutdown\b|reboot\b|mkfs(?:\.|\s)|"
+    r"rm\s+-[^\n]*r[^\n]*f|dd\s+if=)|curl[^\n|]*\|\s*(?:ba)?sh\b"
+)
+_ABSOLUTE_PATHS = (
+    re.compile(r"(?<![\w:/])(?:[A-Za-z]:[\\/](?:[^\s'\"`]+))"),
+    re.compile(r"(?<![\w:/])/(?:Users|home|opt|var|tmp|Applications)/[^\s'\"`)>,]*"),
+)
 
 
 class SkillArchiveError(ValueError):
@@ -180,7 +209,99 @@ def describe_skills(skills_dir: Path, settings: dict) -> list[dict]:
     return result
 
 
-def install_skill_archive(archive_path: Path, skills_dir: Path) -> str:
+def skill_files(root: Path) -> list[Path]:
+    root = Path(root).resolve()
+    return sorted(
+        (
+            path for path in root.rglob("*")
+            if not any(part in _IGNORED_NAMES for part in path.relative_to(root).parts)
+            and (path.is_file() or path.is_symlink())
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+
+
+def validate_skill(root: Path) -> dict:
+    root = Path(root).expanduser().resolve()
+    checks = []
+
+    def check(name: str, ok: bool, detail: str):
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    if not root.is_dir():
+        return {"ok": False, "skill": root.name, "path": str(root), "files": [], "dependencies": [],
+                "checks": [{"name": "Skill 目录", "ok": False, "detail": "目录不存在"}]}
+
+    files = skill_files(root)
+    relative_files = [path.relative_to(root).as_posix() for path in files]
+    symlinks = [name for name, path in zip(relative_files, files) if path.is_symlink()]
+    check("符号链接", not symlinks, "未发现" if not symlinks else "不允许: " + ", ".join(symlinks))
+    unexpected = sorted(item.name for item in root.iterdir() if item.name not in _ALLOWED_ROOT_ITEMS | _IGNORED_NAMES)
+    check("目录结构", not unexpected, "结构精简" if not unexpected else "不需要的顶层项目: " + ", ".join(unexpected))
+
+    loader = SkillLoader(root.parent, enabled=None)
+    meta = loader._parse_skill_file(root / "SKILL.md", root) if (root / "SKILL.md").is_file() else None
+    check("SKILL.md", meta is not None, "格式有效" if meta else "frontmatter 或必填字段不合法")
+    if meta:
+        name_ok = meta.name == root.name and "--" not in meta.name
+        check("名称", name_ok, "名称与目录一致" if name_ok else "名称必须符合规范并与目录名一致")
+        try:
+            body = (root / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2].strip()
+        except (OSError, UnicodeError, IndexError):
+            body = ""
+        check("指令正文", bool(body), "正文有效" if body else "SKILL.md 正文不能为空")
+
+    absolute_hits = []
+    secret_hits = []
+    provider_hits = []
+    command_hits = []
+    python_errors = []
+    dependencies = set()
+    stdlib = getattr(sys, "stdlib_module_names", set())
+    for relative, path in zip(relative_files, files):
+        if path.is_symlink() or (path.suffix.lower() not in _TEXT_SUFFIXES and path.name != "SKILL.md"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for pattern in _ABSOLUTE_PATHS:
+            absolute_hits.extend(f"{relative}: {match.group(0)}" for match in pattern.finditer(text))
+        if any(pattern.search(text) for pattern in _SECRET_PATTERNS):
+            secret_hits.append(relative)
+        if path.suffix.lower() in {".py", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".js", ".ts"} and _PROVIDER_KEY_NAMES.search(text):
+            provider_hits.append(relative)
+        if _DANGEROUS_COMMAND.search(text):
+            command_hits.append(f"{relative}: 危险命令")
+        if _DEPENDENCY_INSTALL.search(text):
+            command_hits.append(f"{relative}: 运行时安装依赖")
+        if path.suffix.lower() == ".py":
+            try:
+                tree = ast.parse(text, filename=str(path))
+            except SyntaxError as exc:
+                python_errors.append(f"{relative}: {exc}")
+                continue
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    names = [node.module]
+                dependencies.update(name.split(".", 1)[0] for name in names if name.split(".", 1)[0] not in stdlib)
+
+    check("绝对路径", not absolute_hits, "未发现" if not absolute_hits else "; ".join(absolute_hits[:5]))
+    check("硬编码密钥", not secret_hits, "未发现" if not secret_hits else "疑似密钥: " + ", ".join(sorted(set(secret_hits))))
+    check("统一模型接口", not provider_hits, "未直接读取模型 Key" if not provider_hits else "禁止读取模型 Key: " + ", ".join(sorted(set(provider_hits))))
+    check("命令安全", not command_hits, "未发现高危命令" if not command_hits else "; ".join(command_hits[:5]))
+    check("Python 语法", not python_errors, "语法有效" if not python_errors else "; ".join(python_errors[:5]))
+    check("外部依赖", True, "仅使用标准库" if not dependencies else "需管理员审核: " + ", ".join(sorted(dependencies)))
+    return {
+        "ok": all(item["ok"] for item in checks), "skill": root.name, "path": str(root),
+        "files": relative_files, "dependencies": sorted(dependencies), "checks": checks,
+    }
+
+
+def install_skill_archive(archive_path: Path, skills_dir: Path, replace_names: Optional[set[str]] = None) -> str:
     skills_dir = Path(skills_dir).resolve()
     skills_dir.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".skill-upload-", dir=skills_dir.parent))
@@ -212,10 +333,31 @@ def install_skill_archive(archive_path: Path, skills_dir: Path) -> str:
         meta = loader._parse_skill_file(skill_root / "SKILL.md", skill_root)
         if meta is None:
             raise SkillArchiveError("SKILL.md 格式不合法")
+        validation = validate_skill(skill_root)
+        if not validation["ok"]:
+            failure = next(item for item in validation["checks"] if not item["ok"])
+            raise SkillArchiveError(f"Skill 安全检查未通过：{failure['name']}，{failure['detail']}")
         destination = skills_dir / meta.name
         if destination.exists():
-            raise SkillArchiveError(f"Skill {meta.name} 已存在，请先删除后再上传")
-        shutil.move(str(skill_root), destination)
+            if meta.name not in (replace_names or set()):
+                raise SkillArchiveError(f"Skill {meta.name} 已存在，请先停用后再上传更新")
+            backup_parent = Path(tempfile.mkdtemp(prefix=".skill-backup-", dir=skills_dir.parent))
+            backup = backup_parent / meta.name
+            try:
+                os.replace(destination, backup)
+                try:
+                    os.replace(skill_root, destination)
+                except OSError:
+                    try:
+                        os.replace(backup, destination)
+                    except OSError as restore_error:
+                        raise SkillArchiveError(f"Skill 更新失败，旧版本保留在 {backup}") from restore_error
+                    raise
+            finally:
+                if destination.exists():
+                    shutil.rmtree(backup_parent, ignore_errors=True)
+        else:
+            shutil.move(str(skill_root), destination)
         return meta.name
     except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
         if isinstance(exc, SkillArchiveError):

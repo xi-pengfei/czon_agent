@@ -5,7 +5,7 @@ import { Modal } from "../../components/Modal";
 import type { RoleRecord } from "../../types";
 import { EmptyTable, formatList, MultiSelect, PageHeader } from "./AdminParts";
 
-const blank: RoleRecord = { name: "", skills: "*", tools: "*", models: "*", is_admin: false };
+const blank: RoleRecord = { name: "", skills: "*", tools: "*", models: "*", is_admin: false, manage_skills: false };
 
 export function RolesPage() {
   const [roles, setRoles] = useState<RoleRecord[]>([]);
@@ -34,7 +34,8 @@ export function RolesPage() {
       <MultiSelect label="允许的 Skills" value={editing.skills} options={catalog.skills.map((item) => ({ value: item.name, label: item.name }))} onChange={(skills) => setEditing({ ...editing, skills })} />
       <MultiSelect label="允许的工具" value={editing.tools} options={catalog.tools.map((item) => ({ value: item, label: item }))} onChange={(tools) => setEditing({ ...editing, tools })} />
       <MultiSelect label="允许的模型" value={editing.models} options={catalog.models.map((item) => ({ value: item, label: item }))} onChange={(models) => setEditing({ ...editing, models })} />
-      <label className="check-field"><input type="checkbox" checked={editing.is_admin} onChange={(event) => setEditing({ ...editing, is_admin: event.target.checked })} />允许进入系统管理</label>
+      <label className="check-field"><input type="checkbox" checked={editing.manage_skills || editing.is_admin} disabled={editing.is_admin} onChange={(event) => setEditing({ ...editing, manage_skills: event.target.checked })} />允许管理 Skills</label>
+      <label className="check-field"><input type="checkbox" checked={editing.is_admin} onChange={(event) => setEditing({ ...editing, is_admin: event.target.checked, manage_skills: event.target.checked || editing.manage_skills })} />允许进入全部系统管理</label>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="primary-button">保存角色</button></div>
     </form></Modal>}
     {notice && <button className="toast" onClick={() => setNotice("")}>{notice}</button>}

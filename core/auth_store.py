@@ -12,8 +12,8 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 DEFAULT_ROLES = {
-    "administrator": {"skills": "*", "tools": "*", "models": "*", "is_admin": True},
-    "standard": {"skills": "*", "tools": "*", "models": "*", "is_admin": False},
+    "administrator": {"skills": "*", "tools": "*", "models": "*", "is_admin": True, "manage_skills": True},
+    "standard": {"skills": "*", "tools": "*", "models": "*", "is_admin": False, "manage_skills": False},
 }
 SESSION_IDLE_MINUTES = 30
 
@@ -41,7 +41,8 @@ class AuthStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._cipher = Fernet(self._load_or_create_key())
+        self._key = self._load_or_create_key()
+        self._cipher = Fernet(self._key)
         self._lock = threading.Lock()
         self._initialize()
 
@@ -70,7 +71,8 @@ class AuthStore:
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS app_roles (
                     name TEXT PRIMARY KEY, skills TEXT NOT NULL, tools TEXT NOT NULL,
-                    models TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0
+                    models TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+                    manage_skills INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS app_departments (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL,
@@ -117,6 +119,22 @@ class AuthStore:
                 connection.execute("ALTER TABLE app_models ADD COLUMN supports_tools INTEGER NOT NULL DEFAULT 1")
             if "supports_streaming" not in columns:
                 connection.execute("ALTER TABLE app_models ADD COLUMN supports_streaming INTEGER NOT NULL DEFAULT 1")
+            skill_columns = {row[1] for row in connection.execute("PRAGMA table_info(app_skill_settings)")}
+            if "state" in skill_columns and "enabled" not in skill_columns:
+                connection.executescript("""
+                    ALTER TABLE app_skill_settings RENAME TO app_skill_settings_with_state;
+                    CREATE TABLE app_skill_settings (
+                        name TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        updated_at TEXT NOT NULL
+                    );
+                    INSERT INTO app_skill_settings(name,enabled,updated_at)
+                    SELECT name,CASE WHEN state='disabled' THEN 0 ELSE 1 END,updated_at
+                    FROM app_skill_settings_with_state;
+                    DROP TABLE app_skill_settings_with_state;
+                """)
+            connection.execute("DROP TABLE IF EXISTS app_skill_draft_messages")
+            connection.execute("DROP TABLE IF EXISTS app_skill_drafts")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(app_models)")}
             if "api_key_env" in columns:
                 connection.executescript("""
@@ -160,30 +178,53 @@ class AuthStore:
                 (timestamp,),
             )
             connection.execute("UPDATE app_users SET department_id='root' WHERE department_id IS NULL")
+            role_columns = {row[1] for row in connection.execute("PRAGMA table_info(app_roles)")}
+            if "manage_skills" not in role_columns:
+                connection.execute("ALTER TABLE app_roles ADD COLUMN manage_skills INTEGER NOT NULL DEFAULT 0")
+            connection.execute("UPDATE app_roles SET manage_skills=1 WHERE is_admin=1")
 
     def seed_roles(self, roles: dict):
         with self._lock, self._connect() as connection:
             for name, cfg in roles.items():
                 connection.execute(
-                    "INSERT OR IGNORE INTO app_roles(name, skills, tools, models, is_admin) VALUES(?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO app_roles(name, skills, tools, models, is_admin, manage_skills) VALUES(?,?,?,?,?,?)",
                     (name, json.dumps(cfg.get("skills", "*")), json.dumps(cfg.get("tools", "*")),
-                     json.dumps(cfg.get("models", "*")), int(bool(cfg.get("is_admin")))),
+                     json.dumps(cfg.get("models", "*")), int(bool(cfg.get("is_admin"))),
+                     int(bool(cfg.get("manage_skills")))),
                 )
 
-    def seed_models(self, models: dict):
-        with self._lock, self._connect() as connection:
-            for name, cfg in models.items():
-                connection.execute(
-                    """INSERT OR IGNORE INTO app_models
-                       (name,display_name,base_url,model,supports_vision,enabled)
-                       VALUES(?,?,?,?,?,1)""",
-                    (name, cfg.get("display_name", name), cfg["base_url"], cfg["model"],
-                     int(cfg.get("supports_vision", False))),
-                )
+    def has_configured_model(self) -> bool:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT 1 FROM app_models WHERE enabled=1 AND api_key_ciphertext<>'' LIMIT 1"
+            ).fetchone() is not None
 
     def has_users(self) -> bool:
         with self._connect() as connection:
             return connection.execute("SELECT 1 FROM app_users LIMIT 1").fetchone() is not None
+
+    def setup_code(self) -> str:
+        return hashlib.sha256(self._key + b":initial-admin").hexdigest()[:12].upper()
+
+    def create_initial_admin(self, password: str) -> bool:
+        """Create the first administrator once, without a temporary password."""
+        password_hash = hash_password(password)
+        timestamp = _now().isoformat(timespec="seconds")
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM app_users LIMIT 1").fetchone():
+                return False
+            connection.execute(
+                """INSERT INTO app_users
+                   (username,password_hash,role,department_id,monthly_token_quota_million,must_change_password,created_at)
+                   VALUES('admin',?,'administrator','root',NULL,0,?)""",
+                (password_hash, timestamp),
+            )
+            connection.execute(
+                "INSERT INTO app_audit_log(actor,action,target,created_at) VALUES(?,?,?,?)",
+                ("system_setup", "create_initial_admin", "admin", timestamp),
+            )
+        return True
 
     def create_user(
         self, username: str, password: str, role: str, must_change=True, actor="system",
@@ -236,7 +277,7 @@ class AuthStore:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self._lock, self._connect() as connection:
             row = connection.execute("""
-                SELECT u.username,u.role,u.must_change_password,r.is_admin,s.csrf_token,
+                SELECT u.username,u.role,u.must_change_password,r.is_admin,r.manage_skills,s.csrf_token,
                        s.last_seen_at,s.expires_at
                 FROM app_login_sessions s JOIN app_users u ON u.username=s.username
                 JOIN app_roles r ON r.name=u.role
@@ -275,7 +316,7 @@ class AuthStore:
     def get_access(self, username: str):
         with self._connect() as connection:
             row = connection.execute("""
-                SELECT u.role,r.skills,r.tools,r.models,r.is_admin FROM app_users u
+                SELECT u.role,r.skills,r.tools,r.models,r.is_admin,r.manage_skills FROM app_users u
                 JOIN app_roles r ON r.name=u.role WHERE u.username=? AND u.active=1
             """, (username,)).fetchone()
         if not row:
@@ -386,21 +427,23 @@ class AuthStore:
 
     def list_roles(self):
         with self._connect() as connection:
-            rows = connection.execute("SELECT name,skills,tools,models,is_admin FROM app_roles ORDER BY name").fetchall()
+            rows = connection.execute("SELECT name,skills,tools,models,is_admin,manage_skills FROM app_roles ORDER BY name").fetchall()
         result = []
         for row in rows:
             item = dict(row)
             for field in ("skills", "tools", "models"):
                 item[field] = json.loads(item[field])
+            item["is_admin"] = bool(item["is_admin"])
+            item["manage_skills"] = bool(item["manage_skills"] or item["is_admin"])
             result.append(item)
         return result
 
-    def upsert_role(self, name: str, skills, tools, models, is_admin: bool, actor: str):
+    def upsert_role(self, name: str, skills, tools, models, is_admin: bool, manage_skills: bool, actor: str):
         with self._lock, self._connect() as connection:
-            connection.execute("""INSERT INTO app_roles(name,skills,tools,models,is_admin) VALUES(?,?,?,?,?)
+            connection.execute("""INSERT INTO app_roles(name,skills,tools,models,is_admin,manage_skills) VALUES(?,?,?,?,?,?)
                 ON CONFLICT(name) DO UPDATE SET skills=excluded.skills,tools=excluded.tools,
-                models=excluded.models,is_admin=excluded.is_admin""",
-                (name, json.dumps(skills), json.dumps(tools), json.dumps(models), int(is_admin)))
+                models=excluded.models,is_admin=excluded.is_admin,manage_skills=excluded.manage_skills""",
+                (name, json.dumps(skills), json.dumps(tools), json.dumps(models), int(is_admin), int(manage_skills)))
             self._audit(connection, actor, "upsert_role", name)
 
     def list_skill_settings(self):

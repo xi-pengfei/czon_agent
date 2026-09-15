@@ -200,10 +200,20 @@ class SessionStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def delete_session(self, session_id: str, owner: str) -> bool:
+    def delete_session(self, session_id: str, owner: str) -> list[str] | None:
         with self._lock, self._connect() as connection:
+            session = connection.execute(
+                "SELECT 1 FROM chat_sessions WHERE id = ? AND owner = ?",
+                (session_id, owner),
+            ).fetchone()
+            if session is None:
+                return None
+            files = [row[0] for row in connection.execute(
+                "SELECT storage_name FROM chat_artifacts WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()]
             cursor = connection.execute(
                 "DELETE FROM chat_sessions WHERE id = ? AND owner = ?",
                 (session_id, owner),
             )
-            return cursor.rowcount > 0
+            return files if cursor.rowcount else None

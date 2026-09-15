@@ -7,10 +7,12 @@ import { Brand } from "./Brand";
 
 type Props = {
   identity: Identity | null;
+  setupRequired: boolean;
+  setupCode: string | null;
   onAuthenticated: (identity: Identity | null) => void;
 };
 
-export function AuthView({ identity, onAuthenticated }: Props) {
+export function AuthView({ identity, setupRequired, setupCode, onAuthenticated }: Props) {
   const changing = Boolean(identity?.must_change_password);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,6 +49,28 @@ export function AuthView({ identity, onAuthenticated }: Props) {
     } finally { setBusy(false); }
   }
 
+  async function initialize(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get("password") || "");
+    const confirmation = String(form.get("password_confirmation") || "");
+    if (password !== confirmation) {
+      setError("两次输入的密码不一致");
+      return;
+    }
+    setBusy(true); setError("");
+    try {
+      const user = await api<Identity>("/api/setup/admin", {
+        method: "POST",
+        body: JSON.stringify({ password, setup_code: setupCode || form.get("setup_code") }),
+      });
+      setCsrfToken(user.csrf_token);
+      onAuthenticated(user);
+    } catch (exception) {
+      setError(exception instanceof Error ? exception.message : "初始化失败");
+    } finally { setBusy(false); }
+  }
+
   return (
     <main className="auth-page">
       <section className="auth-shell">
@@ -64,14 +88,21 @@ export function AuthView({ identity, onAuthenticated }: Props) {
         <section className="auth-card">
           <div className="auth-heading">
             <div className="auth-icon"><AssistantAvatar /></div>
-            <div><h2>{changing ? "设置新密码" : "企业登录"}</h2>{changing && <p>首次登录需要更新临时密码</p>}</div>
+            <div>
+              <h2>{setupRequired ? "设置管理员密码" : changing ? "设置新密码" : "企业登录"}</h2>
+              {setupRequired && <p>管理员账号为 admin</p>}
+              {changing && <p>首次登录需要更新临时密码</p>}
+            </div>
           </div>
-          <form className="auth-form" onSubmit={changing ? changePassword : login}>
-            {!changing && <label>账号<input name="username" autoComplete="username" autoFocus required /></label>}
+          <form className="auth-form" onSubmit={setupRequired ? initialize : changing ? changePassword : login}>
+            {setupRequired && <label>管理员账号<input value="admin" disabled /></label>}
+            {setupRequired && !setupCode && <label>安装码<input name="setup_code" minLength={12} maxLength={12} autoComplete="one-time-code" required /><small>在服务器运行 .venv/bin/python main.py setup-code 查看</small></label>}
+            {!setupRequired && !changing && <label>账号<input name="username" autoComplete="username" autoFocus required /></label>}
             {changing && <label>临时密码<input name="old_password" type="password" autoComplete="current-password" autoFocus required /></label>}
-            <label>{changing ? "新密码" : "密码"}<input name={changing ? "new_password" : "password"} type="password" minLength={changing ? 6 : undefined} autoComplete={changing ? "new-password" : "current-password"} required /></label>
+            <label>{changing ? "新密码" : "密码"}<input name={changing ? "new_password" : "password"} type="password" minLength={setupRequired || changing ? 6 : undefined} autoComplete={setupRequired || changing ? "new-password" : "current-password"} autoFocus={setupRequired} required /></label>
+            {setupRequired && <label>确认密码<input name="password_confirmation" type="password" minLength={6} autoComplete="new-password" required /></label>}
             {error && <div className="form-error">{error}</div>}
-            <button className="primary-button" disabled={busy}>{busy ? "请稍候" : changing ? "更新并重新登录" : "登录"}<ArrowRight size={16} /></button>
+            <button className="primary-button" disabled={busy}>{busy ? "请稍候" : setupRequired ? "设置并进入系统" : changing ? "更新并重新登录" : "登录"}<ArrowRight size={16} /></button>
           </form>
         </section>
       </section>

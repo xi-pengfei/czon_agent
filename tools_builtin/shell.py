@@ -174,11 +174,16 @@ def _truncate(text: str) -> tuple[str, bool]:
     return text[:_MAX_OUTPUT] + f"\n\n[输出已截断，只显示前 {_MAX_OUTPUT} 字符]", True
 
 
-def register(registry, active_provider: str = ""):
+def register(registry, active_provider: str = "", workspace_dir: str = ""):
     def handler(command, timeout=60, progress_callback=None, stop_event=None, control_timeout=None):
+        extra_env = {"CZON_PROJECT_ROOT": str(_ROOT_DIR)}
+        if active_provider:
+            extra_env["CZON_ACTIVE_PROVIDER"] = active_provider
+        if workspace_dir:
+            extra_env["CZON_WORKSPACE"] = str(Path(workspace_dir).resolve())
         return run_bash(
             command, timeout, progress_callback, stop_event, control_timeout,
-            extra_env={"CZON_ACTIVE_PROVIDER": active_provider} if active_provider else None,
+            extra_env=extra_env,
         )
 
     registry.register(

@@ -38,7 +38,7 @@ export function Sidebar(props: Props) {
         <div className="sidebar-footer">
           <div className="account"><span className="account-avatar">{props.identity.username.slice(0, 1).toUpperCase()}</span><span><strong>{props.identity.username}</strong><small>{props.identity.role}</small></span></div>
           <div className="footer-actions">
-            {props.identity.is_admin && <a className="icon-button" href="/admin/users" title="系统管理"><Settings size={17} /></a>}
+            {(props.identity.is_admin || props.identity.manage_skills) && <a className="icon-button" href={props.identity.is_admin ? "/admin/users" : "/admin/skills"} title={props.identity.is_admin ? "系统管理" : "技能管理"}><Settings size={17} /></a>}
             <a className="icon-button" href="http://czon.cn" target="_blank" rel="noreferrer noopener" title="访问官网"><ExternalLink size={17} /></a>
             <button className="icon-button" title="退出登录" onClick={props.onLogout}><LogOut size={17} /></button>
           </div>

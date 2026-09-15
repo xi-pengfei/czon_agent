@@ -1,15 +1,11 @@
 [Unit]
 Description=czon Agent WebUI
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-User=czon_agent
-Group=czon_agent
-WorkingDirectory=/opt/czon_agent
-EnvironmentFile=/opt/czon_agent/.env
-ExecStart=/opt/czon_agent/.venv/bin/python /opt/czon_agent/main.py webui
+WorkingDirectory=%h/czon_agent
+EnvironmentFile=-%h/czon_agent/.env
+ExecStart=%h/czon_agent/.venv/bin/python %h/czon_agent/main.py webui
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT
@@ -19,4 +15,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

@@ -1,7 +1,9 @@
 """FastAPI service for the WebUI and HTTP API."""
 import asyncio
 from collections import deque
+import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -44,15 +46,15 @@ MAX_DIRECTORY_ENTRIES = 200
 MAX_DIRECTORY_PATH_CHARS = 240
 MAX_DIRECTORY_FILE_BYTES = 10 * 1024 * 1024 * 1024 * 1024
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-SAFE_UPLOAD_PATH_RE = re.compile(r"^uploads/[0-9a-f]{32}(?:\.[A-Za-z0-9_-]{1,16})?$")
+SAFE_UPLOAD_PATH_RE = re.compile(r"^uploads/[0-9a-f]{16}/[0-9a-f]{32}(?:\.[A-Za-z0-9_-]{1,16})?$")
 SAFE_MIME_RE = re.compile(r"^[A-Za-z0-9.+_-]+/[A-Za-z0-9.+_-]+$")
 SAFE_SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SAFE_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 MAX_ARTIFACT_COUNT = 50
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
+UPLOAD_RETENTION_SECONDS = 24 * 60 * 60
 SSE_KEEPALIVE_SECONDS = 10
 AUTH_COOKIE = "czon_agent_session"
-
 
 def _model_error_detail(exc: Exception) -> tuple[str, str] | None:
     if isinstance(exc, openai.APITimeoutError):
@@ -187,6 +189,11 @@ class LoginRequest(StrictModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class InitialAdminRequest(StrictModel):
+    password: str = Field(min_length=6, max_length=256)
+    setup_code: str = Field(min_length=12, max_length=12, pattern=r"^[A-Fa-f0-9]{12}$")
+
+
 class ChangePasswordRequest(StrictModel):
     old_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=6, max_length=256)
@@ -231,6 +238,7 @@ class AdminRole(StrictModel):
     tools: str | list[str]
     models: str | list[str]
     is_admin: bool = False
+    manage_skills: bool = False
 
     @field_validator("name")
     @classmethod
@@ -285,6 +293,7 @@ def _admin_validation_detail(exc: RequestValidationError) -> str:
         "monthly_token_quota_million": "Token 额度", "parent_id": "上级部门",
         "skills": "Skills 权限", "tools": "工具权限", "models": "模型权限",
         "is_admin": "系统管理权限", "active": "启用状态",
+        "manage_skills": "Skills 管理权限",
         "api_key_configured": "API Key 配置状态",
     }
     label = labels.get(field, field)
@@ -444,6 +453,13 @@ def create_app(
     log_dir = root / "logs"
     uploads_root = root / "uploads"
     uploads_root.mkdir(parents=True, exist_ok=True)
+    upload_cutoff = time.time() - UPLOAD_RETENTION_SECONDS
+    for stale_upload in uploads_root.rglob("*"):
+        try:
+            if stale_upload.name != ".gitkeep" and stale_upload.is_file() and not stale_upload.is_symlink() and stale_upload.stat().st_mtime < upload_cutoff:
+                stale_upload.unlink()
+        except OSError:
+            logger.warning("无法清理过期上传文件：%s", stale_upload)
     skills_root = Path(skills_dir)
     if not skills_root.is_absolute():
         skills_root = root / skills_root
@@ -477,14 +493,15 @@ def create_app(
     async def security_headers(request: Request, call_next):
         identity = None
         response = None
+        public_api_paths = {"/api/auth/login", "/api/setup/status", "/api/setup/admin"}
         protected_path = request.url.path.startswith(("/api/", "/download/"))
-        if protected_path and request.url.path != "/api/auth/login":
+        if protected_path and request.url.path not in public_api_paths:
             identity = auth_store.get_session(request.cookies.get(AUTH_COOKIE, ""))
             allowed_during_change = {"/api/me", "/api/auth/change-password", "/api/auth/logout"}
             if identity and identity["must_change_password"] and request.url.path not in allowed_during_change:
                 response = JSONResponse(status_code=403, content={"detail": "请先修改初始密码"})
         if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            if response is None and request.url.path != "/api/auth/login":
+            if response is None and request.url.path not in public_api_paths:
                 if identity is None:
                     response = JSONResponse(status_code=401, content={"detail": "请先登录"})
                 else:
@@ -519,6 +536,12 @@ def create_app(
         identity = current_identity(request)
         if not identity.get("is_admin"):
             raise HTTPException(status_code=403, detail="需要管理员权限")
+        return identity
+
+    def require_skill_manager(request: Request) -> dict:
+        identity = current_identity(request)
+        if not identity.get("is_admin") and not identity.get("manage_skills"):
+            raise HTTPException(status_code=403, detail="需要 Skills 管理权限")
         return identity
 
     def available_skills(owner: str) -> list[dict]:
@@ -595,29 +618,37 @@ def create_app(
             "output_tokens": int(usage.get("output_tokens") or 0),
         }
 
-    def workspace_snapshot() -> dict[str, tuple[int, int]]:
+    def user_storage_id(owner: str) -> str:
+        return hashlib.sha256(owner.encode()).hexdigest()[:16]
+
+    def user_workspace(owner: str) -> Path:
+        path = workspace_root / "users" / user_storage_id(owner)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def workspace_snapshot(workspace: Path) -> dict[str, tuple[int, int]]:
         result = {}
-        for path in workspace_root.rglob("*"):
+        for path in workspace.rglob("*"):
             try:
                 if path.is_file() and not path.is_symlink():
                     stat = path.stat()
-                    result[path.relative_to(workspace_root).as_posix()] = (stat.st_mtime_ns, stat.st_size)
+                    result[path.relative_to(workspace).as_posix()] = (stat.st_mtime_ns, stat.st_size)
             except OSError:
                 continue
         return result
 
-    def capture_artifacts(before: dict[str, tuple[int, int]]) -> list[dict]:
+    def capture_artifacts(workspace: Path, before: dict[str, tuple[int, int]]) -> list[dict]:
         changed = []
-        for source_path, signature in workspace_snapshot().items():
+        for source_path, signature in workspace_snapshot(workspace).items():
             if before.get(source_path) == signature or signature[1] > MAX_ARTIFACT_BYTES:
                 continue
             changed.append((source_path, signature[0], signature[1]))
         changed.sort(key=lambda item: item[1])
         artifacts = []
         for source_path, _, size in changed[-MAX_ARTIFACT_COUNT:]:
-            source = (workspace_root / source_path).resolve()
+            source = (workspace / source_path).resolve()
             try:
-                source.relative_to(workspace_root)
+                source.relative_to(workspace)
                 artifact_id = uuid.uuid4().hex
                 suffix = source.suffix[:17] if re.fullmatch(r"\.[A-Za-z0-9_-]{1,16}", source.suffix) else ""
                 storage_name = f"{artifact_id}{suffix}"
@@ -650,7 +681,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="成果文件不存在")
         return FileResponse(str(target), filename=item["name"], media_type=item["mime"])
 
-    def register_confirmation(step: dict, provider: str, owner: str) -> dict:
+    def register_confirmation(step: dict, provider: str, owner: str, workspace: Path) -> dict:
         if not _is_confirmation_step(step):
             return step
         result = step["result"]
@@ -661,26 +692,35 @@ def create_app(
             pending_confirmations[confirmation_id] = {
                 "owner": owner,
                 "provider": provider,
+                "workspace": str(workspace),
                 "tool_name": confirmation.get("tool_name") or step["name"],
                 "args": confirmation.get("args") or step["args"],
             }
         return step
 
-    def validate_attachment_files(attachments: list[AttachmentRequest]) -> list[dict]:
+    def validate_attachment_files(attachments: list[AttachmentRequest], owner: str) -> list[dict]:
         validated = []
+        owner_root = (uploads_root / user_storage_id(owner)).resolve()
         for item in attachments:
             try:
                 relative = Path(item.path).relative_to("uploads")
                 target = (uploads_root / relative).resolve()
-                target.relative_to(uploads_root)
+                target.relative_to(owner_root)
             except (ValueError, OSError):
-                raise HTTPException(status_code=400, detail="附件路径不合法")
+                raise HTTPException(status_code=400, detail="附件不存在或不属于当前用户")
             if not target.is_file():
                 raise HTTPException(status_code=400, detail="附件不存在")
             data = item.model_dump()
             data["path"] = str(target)
             validated.append(data)
         return validated
+
+    def remove_attachments(attachments: list[dict]) -> None:
+        for item in attachments:
+            try:
+                Path(item["path"]).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("无法清理上传文件：%s", item.get("path"))
 
     if webui_dir.exists():
         app.mount("/static", StaticFiles(directory=str(webui_dir)), name="static")
@@ -715,9 +755,42 @@ def create_app(
             "username": identity["username"],
             "role": identity["role"],
             "is_admin": bool(identity.get("is_admin")),
+            "manage_skills": bool(identity.get("is_admin") or identity.get("manage_skills")),
             "must_change_password": bool(identity.get("must_change_password")),
             "csrf_token": identity.get("csrf_token", ""),
         }
+
+    @app.get("/api/setup/status")
+    def setup_status(request: Request):
+        result = {
+            "required": not auth_store.has_users(),
+            "model_required": not auth_store.has_configured_model(),
+        }
+        try:
+            is_local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+        except ValueError:
+            is_local = False
+        if result["required"] and is_local:
+            result["setup_code"] = auth_store.setup_code()
+        return result
+
+    @app.post("/api/setup/admin")
+    def setup_admin(req: InitialAdminRequest):
+        if not hmac.compare_digest(req.setup_code.upper(), auth_store.setup_code()):
+            raise HTTPException(status_code=403, detail="安装码不正确")
+        if not auth_store.create_initial_admin(req.password):
+            raise HTTPException(status_code=409, detail="系统管理员已经创建，请直接登录")
+        token, csrf = auth_store.create_session("admin")
+        response = JSONResponse({
+            "username": "admin", "role": "administrator", "is_admin": True,
+            "manage_skills": True,
+            "must_change_password": False, "csrf_token": csrf,
+        })
+        response.set_cookie(
+            AUTH_COOKIE, token, httponly=True, secure=cookie_secure,
+            samesite="strict", path="/",
+        )
+        return response
 
     @app.post("/api/auth/login")
     def login(req: LoginRequest, request: Request):
@@ -739,6 +812,7 @@ def create_app(
         response = JSONResponse({
             "username": user["username"], "role": user["role"],
             "is_admin": bool(access.get("is_admin")),
+            "manage_skills": bool(access.get("is_admin") or access.get("manage_skills")),
             "must_change_password": bool(user["must_change_password"]), "csrf_token": csrf,
         })
         response.set_cookie(
@@ -856,17 +930,17 @@ def create_app(
 
     @app.get("/api/admin/skills")
     def admin_skills(request: Request):
-        require_admin(request)
+        require_skill_manager(request)
         return {"skills": managed_skills()}
 
     @app.post("/api/admin/skills/rescan")
     def admin_rescan_skills(request: Request):
-        require_admin(request)
+        require_skill_manager(request)
         return {"skills": managed_skills()}
 
     @app.put("/api/admin/skills/{name}")
     def admin_update_skill(name: str, req: AdminSkillUpdate, request: Request):
-        actor = require_admin(request)["username"]
+        actor = require_skill_manager(request)["username"]
         known = {item["name"] for item in managed_skills()}
         if name not in known:
             raise HTTPException(status_code=404, detail="Skill 不存在")
@@ -875,7 +949,9 @@ def create_app(
 
     @app.post("/api/admin/skills/upload")
     async def admin_upload_skill(request: Request, file: UploadFile = File(...)):
-        actor = require_admin(request)["username"]
+        actor = require_skill_manager(request)["username"]
+        current_skills = {item["name"]: item for item in managed_skills()}
+        replace_names = {name for name, item in current_skills.items() if not item["enabled"]}
         if not file.filename or not file.filename.lower().endswith(".zip"):
             raise HTTPException(status_code=400, detail="请选择 ZIP 格式的 Skill 压缩包")
         archive_path = skills_root.parent / f".skill-archive-{uuid.uuid4().hex}.zip"
@@ -888,23 +964,24 @@ def create_app(
                         raise HTTPException(status_code=413, detail="Skill 压缩包不能超过 200 MB")
                     output.write(chunk)
             try:
-                name = install_skill_archive(archive_path, skills_root)
+                name = install_skill_archive(archive_path, skills_root, replace_names=replace_names)
             except SkillArchiveError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
-            auth_store.record_audit(actor, "upload_skill", name)
-            return {"ok": True, "name": name}
+            action = "update_skill" if name in current_skills else "upload_skill"
+            auth_store.record_audit(actor, action, name)
+            return {"ok": True, "name": name, "action": "updated" if name in current_skills else "installed"}
         finally:
             await file.close()
             archive_path.unlink(missing_ok=True)
 
     @app.delete("/api/admin/skills/{name}")
     def admin_delete_skill(name: str, request: Request):
-        actor = require_admin(request)["username"]
+        actor = require_skill_manager(request)["username"]
         item = next((item for item in managed_skills() if item["name"] == name), None)
         if item is None:
             raise HTTPException(status_code=404, detail="Skill 不存在")
         if item["enabled"]:
-            raise HTTPException(status_code=409, detail="请先停用 Skill，再执行删除")
+            raise HTTPException(status_code=409, detail="只有停用状态的 Skill 可以删除")
         try:
             delete_skill(skills_root, name)
         except (KeyError, ValueError, OSError):
@@ -930,7 +1007,10 @@ def create_app(
         ):
             if value != "*" and known and not set(value).issubset(known):
                 raise HTTPException(status_code=422, detail=f"包含不存在的{label}")
-        auth_store.upsert_role(name, req.skills, req.tools, req.models, req.is_admin, actor)
+        auth_store.upsert_role(
+            name, req.skills, req.tools, req.models, req.is_admin,
+            req.manage_skills or req.is_admin, actor,
+        )
         return {"ok": True}
 
     @app.get("/api/admin/models")
@@ -962,6 +1042,20 @@ def create_app(
         def check_result(ok: bool | None, check_started: float, detail: str) -> dict:
             return {"ok": ok, "latency_ms": round((time.monotonic() - check_started) * 1000), "detail": detail}
 
+        def response_error(exc: Exception, fallback: str) -> str:
+            if isinstance(exc, httpx.HTTPStatusError):
+                status = exc.response.status_code
+                try:
+                    payload = exc.response.json()
+                    message = payload.get("error", {}).get("message", "")
+                except Exception:
+                    message = ""
+                message = " ".join(str(message).split())[:160]
+                return f"{fallback}（HTTP {status}{f'：{message}' if message else ''}）"
+            if isinstance(exc, httpx.TimeoutException):
+                return f"{fallback}（请求超时）"
+            return fallback
+
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         timeout = httpx.Timeout(60, connect=5)
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
@@ -984,7 +1078,7 @@ def create_app(
             message_payload = {
                 "model": req.model,
                 "messages": [{"role": "user", "content": "Reply with exactly OK."}],
-                "max_tokens": 16,
+                "max_tokens": 256,
                 "temperature": 0,
             }
             check_started = time.monotonic()
@@ -998,7 +1092,7 @@ def create_app(
                 checks["chat"] = check_result(True, check_started, "对话响应正常")
             except Exception as exc:
                 logger.warning("普通对话检测失败：%s (%s)", base_url, type(exc).__name__)
-                checks["chat"] = check_result(False, check_started, "模型未返回有效对话")
+                checks["chat"] = check_result(False, check_started, response_error(exc, "模型未返回有效对话"))
 
             check_started = time.monotonic()
             try:
@@ -1022,23 +1116,27 @@ def create_app(
                 checks["streaming"] = check_result(True, check_started, "流式增量响应正常")
             except Exception as exc:
                 logger.warning("流式输出检测失败：%s (%s)", base_url, type(exc).__name__)
-                checks["streaming"] = check_result(False, check_started, "未收到有效流式增量")
+                checks["streaming"] = check_result(False, check_started, response_error(exc, "未收到有效流式增量"))
 
             check_started = time.monotonic()
             try:
                 tool_payload = {
                     "model": req.model,
-                    "messages": [{"role": "user", "content": "Call the czon_probe tool now."}],
+                    "messages": [{"role": "user", "content": "You must call czon_probe with value set to OK. Do not answer with text."}],
                     "tools": [{
                         "type": "function",
                         "function": {
                             "name": "czon_probe",
                             "description": "Return a model capability probe.",
-                            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"value": {"type": "string", "description": "Always use OK."}},
+                                "required": ["value"],
+                            },
                         },
                     }],
-                    "tool_choice": {"type": "function", "function": {"name": "czon_probe"}},
-                    "max_tokens": 32,
+                    "tool_choice": "auto",
+                    "max_tokens": 256,
                     "temperature": 0,
                 }
                 response = client.post(f"{base_url}/chat/completions", headers=headers, json=tool_payload)
@@ -1051,7 +1149,7 @@ def create_app(
                 checks["tools"] = check_result(True, check_started, "工具调用响应正常")
             except Exception as exc:
                 logger.warning("工具调用检测失败：%s (%s)", base_url, type(exc).__name__)
-                checks["tools"] = check_result(False, check_started, "模型未返回工具调用")
+                checks["tools"] = check_result(False, check_started, response_error(exc, "当前模型不支持工具调用"))
 
         passed = all(checks[key]["ok"] is True for key in ("chat", "streaming", "tools"))
         return {"ok": passed, "latency_ms": round((time.monotonic() - started) * 1000), "models": models, "checks": checks}
@@ -1086,53 +1184,17 @@ def create_app(
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str, request: Request):
         owner = current_user(request)
-        if not session_store.delete_session(validate_session_id(session_id), owner):
+        storage_names = session_store.delete_session(validate_session_id(session_id), owner)
+        if storage_names is None:
             raise HTTPException(status_code=404, detail="会话不存在")
+        for storage_name in storage_names:
+            target = (artifact_root / storage_name).resolve()
+            try:
+                target.relative_to(artifact_root)
+                target.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                logger.warning("无法清理成果文件：%s", storage_name)
         return {"ok": True}
-
-    @app.post("/api/chat")
-    def chat(req: ChatRequest, request: Request):
-        owner = current_user(request)
-        require_session_access(req.session_id, owner)
-        require_provider(req.provider, owner)
-        prompt = user_prompt(req, available_skills(owner))
-        try:
-            agent = agent_factory(req.provider, owner)
-        except Exception:
-            logger.exception("模型服务初始化失败")
-            raise HTTPException(status_code=400, detail="模型服务暂不可用")
-
-        attachments = validate_attachment_files(req.attachments)
-        files_before = workspace_snapshot()
-        started = time.monotonic()
-        steps_out = []
-
-        def on_step(step):
-            steps_out.append(_step_for_response(register_confirmation(step, req.provider, owner)))
-
-        try:
-            reply, _ = agent.run(
-                prompt,
-                attachments=attachments or None,
-                history=get_history(req.session_id, owner),
-                on_step=on_step,
-            )
-            artifacts = capture_artifacts(files_before)
-            metrics = run_metrics(agent, started)
-            append_history(req.session_id, owner, req.text, attachments, req.directory, reply, artifacts, metrics)
-            return {"reply": reply, "steps": steps_out, "artifacts": [artifact_response(item) for item in artifacts], "metrics": metrics}
-        except AgentTimeout:
-            raise HTTPException(status_code=408, detail="任务执行超时，已停止")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            model_error = _model_error_detail(exc)
-            if model_error:
-                error_id = uuid.uuid4().hex[:8]
-                logger.exception("/api/chat 模型请求失败，错误编号=%s", error_id)
-                raise HTTPException(status_code=503, detail=f"{model_error[1]}（错误编号：{error_id}）")
-            logger.exception("/api/chat 执行失败")
-            raise HTTPException(status_code=500, detail="请求处理失败，请稍后重试")
 
     @app.post("/api/chat/stream")
     async def chat_stream(req: StreamChatRequest, request: Request):
@@ -1140,15 +1202,16 @@ def create_app(
         require_session_access(req.session_id, owner)
         require_provider(req.provider, owner)
         prompt = user_prompt(req, available_skills(owner))
-        attachments = validate_attachment_files(req.attachments)
-        files_before = workspace_snapshot()
+        attachments = validate_attachment_files(req.attachments, owner)
+        workspace = user_workspace(owner)
+        files_before = workspace_snapshot(workspace)
         stop_event = threading.Event()
         with active_runs_lock:
             if req.run_id in active_runs:
                 raise HTTPException(status_code=409, detail="任务标识已在使用")
             for active in active_runs.values():
-                if active["session_id"] == req.session_id:
-                    raise HTTPException(status_code=409, detail="当前会话已有任务正在运行")
+                if active["owner"] == owner:
+                    raise HTTPException(status_code=409, detail="当前账号已有任务正在运行")
             active_runs[req.run_id] = {
                 "session_id": req.session_id,
                 "owner": owner,
@@ -1161,14 +1224,14 @@ def create_app(
             started = time.monotonic()
             try:
                 try:
-                    agent = agent_factory(req.provider, owner)
+                    agent = agent_factory(req.provider, owner, str(workspace))
                 except Exception:
                     logger.exception("模型服务初始化失败")
                     events.put(("agent_error", {"error": "模型服务暂不可用"}))
                     return
 
                 def on_step(step):
-                    step_out = _step_for_response(register_confirmation(step, req.provider, owner))
+                    step_out = _step_for_response(register_confirmation(step, req.provider, owner, workspace))
                     result = step_out.get("result") or {}
                     error = result.get("error") if isinstance(result, dict) else None
                     event_name = "confirmation_required" if error and error.get("type") == "ConfirmationRequired" else "tool_result"
@@ -1193,7 +1256,7 @@ def create_app(
                     on_progress=on_progress,
                     stop_event=stop_event,
                 )
-                artifacts = capture_artifacts(files_before)
+                artifacts = capture_artifacts(workspace, files_before)
                 metrics = run_metrics(agent, started)
                 append_history(req.session_id, owner, req.text, attachments, req.directory, reply, artifacts, metrics)
                 events.put(("agent_done", {
@@ -1221,6 +1284,7 @@ def create_app(
                         "error": f"请求处理失败，请稍后重试（错误编号：{error_id}）",
                     }))
             finally:
+                remove_attachments(attachments)
                 events.put(None)
 
         threading.Thread(target=run_agent, daemon=True).start()
@@ -1279,7 +1343,7 @@ def create_app(
         if pending is None:
             raise HTTPException(status_code=404, detail="确认请求不存在或已过期")
         try:
-            agent = agent_factory(pending["provider"], owner)
+            agent = agent_factory(pending["provider"], owner, pending["workspace"])
         except Exception:
             logger.exception("模型服务初始化失败")
             raise HTTPException(status_code=400, detail="模型服务暂不可用")
@@ -1295,11 +1359,21 @@ def create_app(
         }
 
     @app.post("/api/upload")
-    def upload(file: UploadFile = File(...)):
+    def upload(request: Request, file: UploadFile = File(...)):
+        owner = current_user(request)
         suffix = Path(file.filename or "upload").suffix.lower()
         if suffix and not re.fullmatch(r"\.[a-z0-9_-]{1,16}", suffix):
             raise HTTPException(status_code=400, detail="文件扩展名不合法")
-        dest = uploads_root / f"{uuid.uuid4().hex}{suffix}"
+        owner_root = uploads_root / user_storage_id(owner)
+        owner_root.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - UPLOAD_RETENTION_SECONDS
+        for stale_upload in owner_root.iterdir():
+            try:
+                if stale_upload.name != ".gitkeep" and stale_upload.is_file() and stale_upload.stat().st_mtime < cutoff:
+                    stale_upload.unlink()
+            except OSError:
+                logger.warning("无法清理过期上传文件：%s", stale_upload)
+        dest = owner_root / f"{uuid.uuid4().hex}{suffix}"
         size = 0
         try:
             with dest.open("wb") as output:
@@ -1315,7 +1389,7 @@ def create_app(
         if not SAFE_MIME_RE.fullmatch(mime):
             mime = "application/octet-stream"
         return {
-            "path": f"uploads/{dest.name}",
+            "path": f"uploads/{user_storage_id(owner)}/{dest.name}",
             "name": Path(file.filename or dest.name).name[:160],
             "mime": mime,
             "size": size,

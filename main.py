@@ -6,7 +6,7 @@ czon Agent 统一入口
   python main.py                       # 交互式 REPL
   python main.py "消息内容"             # 单次执行并退出
   python main.py webui                 # 按 config.yaml 启动 WebUI
-  python main.py setup-admin           # 创建首个系统管理员
+  python main.py setup-code            # 查看首次管理员安装码
 """
 import argparse
 import os
@@ -74,7 +74,7 @@ def build_agent(config: dict, provider_override: Optional[str] = None):
     tool_policy = ToolPolicy(policy_config)
     registry = ToolRegistry(policy=tool_policy)
     file_ops.register(registry, workspace_dir=workspace_dir)
-    shell.register(registry, active_provider=provider)
+    shell.register(registry, active_provider=provider, workspace_dir=workspace_dir)
     skill_ops.register(registry, skill_loader)
     agent_cfg = config.get("agent", {})
     extra_rules = [
@@ -117,7 +117,6 @@ def cmd_webui(config: dict, args):
     from types import SimpleNamespace
     from core.access_control import allowed_names
     from core.auth_store import AuthStore, DEFAULT_ROLES
-    from core.llm import DEFAULT_MODELS
     from core.skills import SkillLoader
 
     session_db = webui_cfg.get("session_db", "./data/czon_agent.db")
@@ -126,7 +125,6 @@ def cmd_webui(config: dict, args):
         db_path = PROJECT_ROOT / db_path
     auth_store = AuthStore(db_path)
     auth_store.seed_roles(DEFAULT_ROLES)
-    auth_store.seed_models(DEFAULT_MODELS)
     skills_cfg = config.get("skills") or {}
     skills_dir = Path(skills_cfg.get("dir", "./skills"))
     if not skills_dir.is_absolute():
@@ -138,13 +136,14 @@ def cmd_webui(config: dict, args):
             raise RuntimeError("用户不存在或已禁用")
         return SimpleNamespace(**access)
 
-    def agent_factory(provider: str, username: str):
+    def agent_factory(provider: str, username: str, user_workspace: str):
         access = access_resolver(username)
         webui_rules = config.get("webui", {}).get("extra_rules") or []
         merged_config = {
             **config,
             "current_user": username,
             "current_access": access,
+            "workspace": {"dir": user_workspace},
             "skills": {
                 **skills_cfg,
                 "dir": str(skills_dir),
@@ -213,32 +212,18 @@ def cmd_webui(config: dict, args):
     uvicorn.run(app, host=host, port=port, log_level="warning", server_header=False)
 
 
-def cmd_setup_admin(config: dict):
-    import getpass
-    import re
-    from core.auth_store import AuthStore, DEFAULT_ROLES
-    from core.llm import DEFAULT_MODELS
+def cmd_setup_code(config: dict):
+    from core.auth_store import AuthStore
 
-    webui_cfg = config.get("webui") or {}
-    db_path = Path(webui_cfg.get("session_db", "./data/czon_agent.db"))
+    session_db = (config.get("webui") or {}).get("session_db", "./data/czon_agent.db")
+    db_path = Path(session_db)
     if not db_path.is_absolute():
         db_path = PROJECT_ROOT / db_path
     store = AuthStore(db_path)
-    store.seed_roles(DEFAULT_ROLES)
-    store.seed_models(DEFAULT_MODELS)
     if store.has_users():
-        raise RuntimeError("系统中已存在用户，请在管理员页面创建或管理账号")
-    username = input("管理员账号 [admin]：").strip() or "admin"
-    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", username):
-        raise RuntimeError("用户名格式不合法")
-    password = getpass.getpass("初始密码（至少 6 位）：")
-    confirm = getpass.getpass("再次输入密码：")
-    if password != confirm:
-        raise RuntimeError("两次输入的密码不一致")
-    if len(password) < 6:
-        raise RuntimeError("密码至少需要 6 位")
-    store.create_user(username, password, "administrator", must_change=True)
-    print(f"管理员 {username} 已创建，请启动 WebUI 并登录后修改初始密码。")
+        print("管理员已经创建，无需安装码。")
+    else:
+        print(f"首次管理员安装码：{store.setup_code()}")
 
 
 def _render_rule(rule, workspace_dir: str) -> str:
@@ -260,7 +245,7 @@ def main():
         prog="czon_agent",
         description="czon Agent — 极简 Python Agent Runtime",
     )
-    parser.add_argument("command_or_message", nargs="?", help="webui / setup-admin / 或直接输入消息")
+    parser.add_argument("command_or_message", nargs="?", help="webui / 或直接输入消息")
     parser.add_argument("message_parts", nargs=argparse.REMAINDER, help="消息剩余内容")
 
     args = parser.parse_args()
@@ -279,10 +264,10 @@ def main():
 
     try:
         command = args.command_or_message
-        if command == "setup-admin":
-            cmd_setup_admin(config)
-        elif command == "webui":
+        if command == "webui":
             cmd_webui(config, args)
+        elif command == "setup-code":
+            cmd_setup_code(config)
         elif command:
             message = " ".join([command] + args.message_parts).strip()
             cmd_cli(config, message=message)

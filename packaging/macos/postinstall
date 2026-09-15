@@ -1,0 +1,48 @@
+#!/bin/bash
+set -euo pipefail
+
+INSTALL_DIR="/Applications/czon_agent"
+PYTHON_PACKAGE="$INSTALL_DIR/.installer/python.pkg"
+PYTHON_BIN="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+LABEL="com.czon.agent"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  /usr/sbin/installer -pkg "$PYTHON_PACKAGE" -target /
+fi
+
+mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/uploads" "$INSTALL_DIR/workspace"
+touch "$INSTALL_DIR/.env"
+
+"$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
+"$INSTALL_DIR/.venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-index \
+  --find-links "$INSTALL_DIR/.installer/wheelhouse" \
+  -r "$INSTALL_DIR/requirements.txt"
+
+CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console)"
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" || "$CONSOLE_USER" == "loginwindow" ]]; then
+  echo "无法确定当前登录用户，不能注册开机启动。" >&2
+  exit 1
+fi
+
+USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+USER_ID="$(/usr/bin/id -u "$CONSOLE_USER")"
+LAUNCH_AGENTS="$USER_HOME/Library/LaunchAgents"
+PLIST_PATH="$LAUNCH_AGENTS/$LABEL.plist"
+
+cd "$INSTALL_DIR"
+/bin/rm -f "$INSTALL_DIR/首次登录信息.txt"
+
+mkdir -p "$LAUNCH_AGENTS"
+cp "$INSTALL_DIR/.installer/com.czon.agent.plist" "$PLIST_PATH"
+chown -R "$CONSOLE_USER":staff "$INSTALL_DIR" "$LAUNCH_AGENTS"
+chmod 600 "$INSTALL_DIR/.env"
+chmod 644 "$PLIST_PATH"
+rm -rf "$INSTALL_DIR/.installer"
+
+/bin/launchctl bootout "gui/$USER_ID/$LABEL" >/dev/null 2>&1 || true
+/bin/launchctl bootstrap "gui/$USER_ID" "$PLIST_PATH"
+/bin/launchctl kickstart -k "gui/$USER_ID/$LABEL"
+
+exit 0

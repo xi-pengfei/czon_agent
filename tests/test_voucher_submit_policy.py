@@ -11,7 +11,7 @@ class VoucherSubmitPolicyTests(unittest.TestCase):
             config = yaml.safe_load(source)
         return ToolPolicy(config["tool_policy"])
 
-    def test_voucher_submit_requires_platform_confirmation(self):
+    def test_voucher_submit_does_not_require_extra_platform_confirmation(self):
         policy = self.load_policy()
         decision = policy.check(
             "bash",
@@ -23,7 +23,7 @@ class VoucherSubmitPolicyTests(unittest.TestCase):
                 )
             },
         )
-        self.assertEqual(decision.action, "confirm")
+        self.assertEqual(decision.action, "allow")
 
     def test_form_argument_does_not_look_like_rm(self):
         decision = self.load_policy().check(

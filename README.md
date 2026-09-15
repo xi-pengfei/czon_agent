@@ -8,11 +8,10 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python main.py setup-admin
 python main.py webui
 ```
 
-Mac 本机访问 `http://127.0.0.1:8000`；同一局域网访问 `http://Mac的局域网IP:8000`。首次管理员登录必须修改初始密码。
+本机访问 `http://127.0.0.1:8000`；同一局域网访问 `http://服务器的局域网IP:8000`。首次打开网页时，直接为固定管理员账号 `admin` 设置密码，不使用临时密码。
 
 登录后由系统管理员在“模型配置”页面添加模型和 API Key。模型密钥加密保存在本地数据库，不再从 `.env` 读取。
 
@@ -69,11 +68,7 @@ python main.py "帮我列出 workspace 下的文件"
 
 ## 部署方式
 
-应用可直接提供完整 WebUI，也可以选择在 Ubuntu 前面增加 Nginx，用于标准端口、HTTPS 和反向代理。应用自身的登录负责用户、角色和数据权限，默认不再叠加 Nginx Basic Auth。部署步骤见 [Ubuntu 部署指南](DEPLOY_UBUNTU.md) 和 [Windows 部署指南](DEPLOY_WINDOWS.md)。
-
-Ubuntu 和 Windows 均支持在线一键安装：引导脚本会自动从 GitHub 下载最新版；客户现场不能访问 GitHub 时，仍可使用 ZIP 离线安装。
-
-下载 ZIP 并解压后，Windows 用户双击根目录的 `INSTALL_WINDOWS.cmd`；Ubuntu 用户在根目录执行 `bash INSTALL_UBUNTU.sh`。底层安装脚本位于 `deploy/`，普通用户不需要直接操作。
+Ubuntu 直接运行 Python WebUI，部署步骤见 [Ubuntu 部署指南](DEPLOY_UBUNTU.md)。Windows 和 macOS 面向普通用户提供安装包，不再提供一键部署脚本文档。
 
 ## 项目结构
 
@@ -82,7 +77,7 @@ czon_agent/
 ├── adapters/       # CLI 和 FastAPI
 ├── core/           # Agent、认证、会话、LLM、Skills、工具策略
 ├── data/           # SQLite 数据
-├── deploy/         # 可选 Nginx 与 systemd 模板
+├── deploy/         # Ubuntu systemd 服务模板
 ├── frontend/       # React + TypeScript 源码
 ├── skills/         # 业务 Skills
 ├── tools_builtin/  # read、write、bash、activate_skill
@@ -106,4 +101,4 @@ npm run build
 
 Node.js 只在修改前端和重新构建时使用。生产服务器直接使用已经生成的 `webui/`，无需运行 Node 服务。`data/czon_agent.db`、`data/czon_agent.key` 和 `data/artifacts/` 必须一起备份；丢失 Key 文件后，网页中保存的模型密钥无法恢复。
 
-当前 `workspace` 是 Agent 执行时的共享工作区，但网页成果下载使用按用户隔离的不可变副本。正式生产建议通过 Nginx 配置 HTTPS。
+当前 `workspace` 是 Agent 执行时的共享工作区，但网页成果下载使用按用户隔离的不可变副本。

@@ -70,6 +70,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .auth-form .primary-button { width: 100%; margin-top: 3px; }
 .form-error { padding: 9px 10px; color: var(--red); background: var(--red-soft); border-left: 3px solid var(--red); font-size: 12px; }
 
+/* First model setup */
+
 /* Chat shell */
 .chat-app { display: flex; width: 100%; height: 100dvh; background: #fff; }
 .sidebar { display: flex; z-index: 20; width: 260px; min-width: 260px; height: 100%; padding: 16px 11px 12px; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--line); transition: width .16s ease, min-width .16s ease, transform .16s ease; }
@@ -199,6 +201,7 @@ kbd { padding: 1px 5px; color: var(--ink); background: var(--surface-soft); bord
 .skill-palette button:hover { color: var(--blue); background: var(--blue-soft); }
 .skill-palette button span { display: grid; gap: 2px; }.skill-palette strong { color: var(--ink); font-size: 12px; }.skill-palette small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-footnote { margin-top: 8px; color: var(--faint); font-size: 10px; text-align: center; }
+.no-model-banner { display:flex; width:min(850px,calc(100% - 48px)); min-height:38px; margin:0 auto; padding:7px 10px; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); background:var(--amber-soft); border:1px solid #ead6a4; font-size:11px; }.no-model-banner a { display:inline-flex; align-items:center; gap:5px; color:var(--blue); font-weight:650; text-decoration:none; white-space:nowrap; }
 .toast { position: fixed; z-index: 100; right: 18px; bottom: 18px; max-width: min(380px,calc(100vw - 36px)); padding: 10px 13px; color: #fff; background: #30343a; border: 0; border-radius: 6px; box-shadow: var(--shadow); text-align: left; }
 
 /* Administration */
@@ -268,6 +271,7 @@ kbd { padding: 1px 5px; color: var(--ink); background: var(--surface-soft); bord
   .sidebar { position:fixed; inset:0 auto 0 0; width:min(280px,86vw) !important; min-width:min(280px,86vw) !important; transform:translateX(-101%); box-shadow:var(--shadow); }
   .sidebar.is-open { transform:translateX(0); }.sidebar-close { display:grid; }.sidebar-backdrop { position:fixed; z-index:15; inset:0; display:block; padding:0; background:rgba(27,31,36,.28); border:0; }
   .message-column { padding:25px 14px 12px; }.composer-zone { padding:8px 9px 10px; }.user-content { max-width:92%; }.composer-left select { max-width:190px; }
+  .no-model-banner { width:calc(100% - 18px); }
   .admin-app { grid-template-columns:138px minmax(0,1fr); }.admin-sidebar { padding:16px 7px 10px; }.admin-brand .brand { font-size:15px; }.admin-sidebar nav a,.back-link { justify-content:flex-start; padding:0 9px; font-size:12px; }.admin-content { padding:20px 13px; }.admin-topbar { padding:0 14px; }.page-header { align-items:center; }.page-header p { display:none; }.form-grid,.check-row { grid-template-columns:1fr; }
 }
 

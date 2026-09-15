@@ -46,6 +46,25 @@ class ModelConfigTests(unittest.TestCase):
             self.assertEqual(llm.provider, "internal_model")
             self.assertEqual(llm.model, "company-model")
 
+    def test_model_without_tool_support_does_not_send_tool_definitions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = AuthStore(root / "data" / "models.db")
+            store.upsert_model({
+                "name": "chat_only", "display_name": "Chat only",
+                "base_url": "http://llm.internal/v1", "model": "chat",
+                "api_key": "test-secret", "supports_vision": False,
+                "supports_tools": False, "enabled": True,
+            }, actor="test")
+            config = {
+                "active_provider": "chat_only", "agent": {"llm_request_timeout_seconds": 10},
+                "webui": {"session_db": "./data/models.db"},
+            }
+            llm = make_llm_from_config(config, root)
+            payload = llm._build_chat_kwargs("system", [{"role": "user", "content": "hello"}], [{"type": "function"}])
+            self.assertNotIn("tools", payload)
+            self.assertNotIn("tool_choice", payload)
+
     def test_model_uses_split_timeouts_and_bounded_retries(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

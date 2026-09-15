@@ -2,6 +2,7 @@ export type Identity = {
   username: string;
   role: string;
   is_admin: boolean;
+  manage_skills: boolean;
   must_change_password: boolean;
   csrf_token: string;
 };
@@ -101,6 +102,7 @@ export type RoleRecord = {
   tools: "*" | string[];
   models: "*" | string[];
   is_admin: boolean;
+  manage_skills: boolean;
 };
 
 export type ModelRecord = {

@@ -1,5 +1,5 @@
-# CLI 默认模型；WebUI 用户在管理页配置并按权限选择模型。
-active_provider: kimi
+# CLI 可通过 CZON_ACTIVE_PROVIDER 指定模型；WebUI 从数据库选择已配置模型。
+active_provider: ""
 
 # Skills 配置
 skills:
@@ -12,7 +12,7 @@ workspace:
 
 # Agent 配置
 agent:
-  max_runtime_seconds: 900
+  max_runtime_seconds: 28800
   max_consecutive_errors: 3
   # 模型连接、连续无数据读取和请求写入分别限时；避免外部模型长时间无响应。
   llm_connect_timeout_seconds: 10
@@ -56,7 +56,6 @@ tool_policy:
       - "pip3 install"
       - "python -m pip install"
       - "python3 -m pip install"
-      - "dingtalk-kingdee-voucher-sync/scripts/command.py submit"
   write:
     confirm_paths:
       - ".env"

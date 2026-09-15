@@ -25,23 +25,23 @@ Read a file as JSON/text:
 
 Write Markdown or text:
 
-    bash: python skills/office-io/scripts/office.py write-md workspace/report.md --text "内容"
+    bash: python skills/office-io/scripts/office.py write-md "$CZON_WORKSPACE/report.md" --text "内容"
 
 Write Word:
 
-    bash: python skills/office-io/scripts/office.py write-docx workspace/report.docx --text "标题\n\n正文"
+    bash: python skills/office-io/scripts/office.py write-docx "$CZON_WORKSPACE/report.docx" --text "标题\n\n正文"
 
 Write Excel from JSON:
 
-    bash: python skills/office-io/scripts/office.py write-xlsx workspace/table.xlsx --json '[{"姓名":"张三","薪资":18000},{"姓名":"李四","薪资":22000}]'
+    bash: python skills/office-io/scripts/office.py write-xlsx "$CZON_WORKSPACE/table.xlsx" --json '[{"姓名":"张三","薪资":18000},{"姓名":"李四","薪资":22000}]'
 
 Write PowerPoint from JSON:
 
-    bash: python skills/office-io/scripts/office.py write-pptx workspace/slides.pptx --json '[{"title":"第一页","bullets":["要点一","要点二"]}]'
+    bash: python skills/office-io/scripts/office.py write-pptx "$CZON_WORKSPACE/slides.pptx" --json '[{"title":"第一页","bullets":["要点一","要点二"]}]'
 
 Write simple text PDF:
 
-    bash: python skills/office-io/scripts/office.py write-pdf workspace/report.pdf --text "标题\n\n正文"
+    bash: python skills/office-io/scripts/office.py write-pdf "$CZON_WORKSPACE/report.pdf" --text "标题\n\n正文"
 
 ## Rules
 
@@ -49,5 +49,5 @@ Write simple text PDF:
 - Use `inspect` first when the file type or path is unclear.
 - Use exact uploaded/local paths from the user message.
 - For PDF, this skill reads text and can generate a simple text PDF. It does not perform precise editing of existing PDF layout.
-- For mutating writes, use `workspace/` as the output directory.
+- For mutating writes, use the directory in `$CZON_WORKSPACE`.
 - After creating or modifying a workspace file, tell the user the output path and a download link like `[下载文件](/download/report.docx)`.

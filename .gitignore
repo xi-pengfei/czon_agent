@@ -33,6 +33,8 @@ venv/
 dist/
 build/
 frontend/node_modules/
+.packaging-build/
+release/
 
 # 企业私有 Skills：仅在客户环境单独部署，不进入公共仓库
 skills/consumable-inventory/
@@ -45,6 +47,7 @@ skills/patient-consultation/
 skills/patient-recall/
 skills/pledgebox-dianxiaomi-export/
 skills/pledgebox-kingdee-sale-outbound-sync/
+skills/pledgebox-sync/
 skills/post-treatment-followup/
 
 # IDE

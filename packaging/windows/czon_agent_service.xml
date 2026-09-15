@@ -1,0 +1,18 @@
+<service>
+  <id>czon_agent</id>
+  <name>czon_agent</name>
+  <description>企业 AI 智能体后台服务</description>
+  <executable>%BASE%\..\runtime\python.exe</executable>
+  <arguments>main.py webui</arguments>
+  <workingdirectory>%BASE%\..</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30sec</stoptimeout>
+  <onfailure action="restart" delay="5 sec" />
+  <onfailure action="restart" delay="15 sec" />
+  <logpath>%BASE%\..\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

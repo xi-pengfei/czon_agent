@@ -3,29 +3,27 @@ import { Bot, CheckCircle2, CircleMinus, KeyRound, Pencil, Plus, RefreshCw, Wifi
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 import type { ModelRecord } from "../../types";
+import { modelPresets as presets } from "../../modelPresets";
 import { EmptyTable, PageHeader } from "./AdminParts";
 
 type ModelDraft = ModelRecord & { api_key?: string };
 type ProbeCheck = { ok: boolean | null; latency_ms: number; detail: string };
 type ProbeResult = { ok: boolean; latency_ms: number; models: string[]; checks: Record<"models" | "chat" | "streaming" | "tools", ProbeCheck> };
 
-const presets = [
-  { id: "kimi", label: "Moonshot / Kimi", base_url: "https://api.moonshot.cn/v1", vision: true, tools: true, streaming: true },
-  { id: "qwen", label: "阿里云 / 通义千问", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", vision: true, tools: true, streaming: true },
-  { id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1", vision: false, tools: true, streaming: true },
-  { id: "ollama", label: "Ollama（本机私有模型）", base_url: "http://127.0.0.1:11434/v1", vision: false, tools: true, streaming: true, defaultName: "ollama", displayName: "Ollama", apiKey: "ollama" },
-];
 const blank: ModelDraft = { name: "", display_name: "", base_url: "", model: "", supports_vision: false, supports_tools: true, supports_streaming: true, enabled: true, api_key: "" };
 
-export function ModelsPage() {
+export function ModelsPage({ onConfigured }: { onConfigured?: () => void }) {
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [editing, setEditing] = useState<ModelDraft | null>(null);
   const [discovered, setDiscovered] = useState<string[]>([]);
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   const [notice, setNotice] = useState("");
-  const load = () => api<{ models: ModelRecord[] }>("/api/admin/models").then((data) => setModels(data.models));
-  useEffect(() => { void load(); }, []);
+  const load = (openWhenEmpty = false) => api<{ models: ModelRecord[] }>("/api/admin/models").then((data) => {
+    setModels(data.models);
+    if (openWhenEmpty && !data.models.length) setEditing({ ...blank });
+  });
+  useEffect(() => { void load(true); }, []);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!editing) return;
@@ -40,7 +38,7 @@ export function ModelsPage() {
       supports_streaming: editing.supports_streaming,
       enabled: editing.enabled,
     };
-    try { await api(`/api/admin/models/${encodeURIComponent(value.name)}`, { method: "PUT", body: JSON.stringify(value) }); setEditing(null); setNotice("模型配置已保存"); await load(); }
+    try { await api(`/api/admin/models/${encodeURIComponent(value.name)}`, { method: "PUT", body: JSON.stringify(value) }); setEditing(null); setNotice("模型配置已保存"); await load(); onConfigured?.(); }
     catch (error) { setNotice((error as Error).message); }
   }
 
@@ -49,8 +47,8 @@ export function ModelsPage() {
     const preset = presets.find((item) => item.id === id)!;
     setEditing({
       ...editing,
-      name: editing.name || ("defaultName" in preset ? preset.defaultName || "" : ""),
-      display_name: editing.display_name || ("displayName" in preset ? preset.displayName || "" : ""),
+      name: editing.name || preset.id,
+      display_name: editing.display_name || preset.shortLabel,
       base_url: preset.base_url,
       api_key: editing.api_key || (!editing.api_key_configured && "apiKey" in preset ? preset.apiKey : ""),
       supports_vision: preset.vision,
@@ -67,7 +65,7 @@ export function ModelsPage() {
       const result = await api<ProbeResult>("/api/admin/models/probe", { method: "POST", body: JSON.stringify({ name: editing.name || null, base_url: editing.base_url, model: editing.model || null, api_key: editing.api_key || null }) });
       setDiscovered(result.models);
       setProbeResult(result);
-      setNotice(editing.model ? (result.ok ? "模型能力测试全部通过" : "模型能力测试完成，请查看各项结果") : "已获取模型列表，请选择模型后再次测试");
+      setNotice(editing.model ? (result.ok ? "模型能力测试全部通过" : (result.checks.models.ok ? "API Key 有效，但当前模型能力未全部通过" : "连接或 API Key 校验失败")) : "已获取模型列表，请选择模型后再次测试");
     } catch (error) { setNotice((error as Error).message); }
     finally { setProbing(false); }
   }

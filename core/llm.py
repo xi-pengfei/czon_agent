@@ -9,13 +9,6 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODELS = {
-    "kimi": {"display_name": "Kimi", "base_url": "https://api.moonshot.cn/v1", "model": "kimi-k3", "supports_vision": True},
-    "qwen": {"display_name": "通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-vl-max", "supports_vision": True},
-    "deepseek": {"display_name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-v4-pro", "supports_vision": False},
-}
-
-
 def get_provider_configs(config: dict) -> Dict[str, Dict]:
     providers = config.get("providers")
     if not isinstance(providers, dict) or not providers:
@@ -32,6 +25,7 @@ def get_provider_configs(config: dict) -> Dict[str, Dict]:
             raise RuntimeError(f"provider '{name}' 缺少 API Key 配置")
         if not isinstance(cfg.get("supports_vision"), bool):
             raise RuntimeError(f"provider '{name}' 的 supports_vision 必须是布尔值")
+        cfg["supports_tools"] = bool(cfg.get("supports_tools", True))
         cfg["display_name"] = str(cfg.get("display_name") or name)
         result[name] = cfg
     return result
@@ -49,7 +43,6 @@ def get_runtime_provider_configs(config: dict, project_root: Path | None = None)
     if not db_path.is_absolute():
         db_path = project_root / db_path
     store = AuthStore(db_path)
-    store.seed_models(DEFAULT_MODELS)
     providers = {}
     for item in store.list_models():
         api_key = store.get_model_api_key(item["name"])
@@ -61,6 +54,7 @@ def get_runtime_provider_configs(config: dict, project_root: Path | None = None)
             "model": item["model"],
             "api_key": api_key,
             "supports_vision": bool(item["supports_vision"]),
+            "supports_tools": bool(item["supports_tools"]),
         }
     return get_provider_configs({"providers": providers}) if providers else {}
 
@@ -73,6 +67,7 @@ class LLM:
         model: str,
         base_url: str,
         supports_vision: bool,
+        supports_tools: bool = True,
         connect_timeout: int = 10,
         read_timeout: int = 60,
         write_timeout: int = 30,
@@ -80,6 +75,7 @@ class LLM:
     ):
         self.provider = provider
         self._supports_vision = supports_vision
+        self._supports_tools = supports_tools
         self.model = model
         self.client = OpenAI(
             api_key=api_key,
@@ -113,10 +109,18 @@ class LLM:
             "usage": response.usage,
         })()
 
-    def stream_complete(self, system: str, messages: List, tools: List):
+    def stream_complete(
+        self,
+        system: str,
+        messages: List,
+        tools: List,
+        max_tokens: int | None = None,
+    ):
         kwargs = self._build_chat_kwargs(system, messages, tools)
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         return self.client.chat.completions.create(**kwargs)
 
     def _build_chat_kwargs(self, system: str, messages: List, tools: List) -> Dict:
@@ -125,7 +129,7 @@ class LLM:
         all_messages = [{"role": "system", "content": system}] + messages
         logger.debug("LLM 请求：model=%s, messages=%s 条, tools=%s 个", self.model, len(all_messages), len(tools))
         kwargs: Dict = {"model": self.model, "messages": all_messages}
-        if tools:
+        if tools and self._supports_tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
         return kwargs
@@ -170,6 +174,7 @@ def make_llm_from_config(config: dict, project_root: Path | None = None) -> LLM:
         model=cfg["model"],
         base_url=cfg["base_url"],
         supports_vision=cfg["supports_vision"],
+        supports_tools=cfg["supports_tools"],
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         write_timeout=write_timeout,

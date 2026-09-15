@@ -61,6 +61,16 @@ class ProbeClient:
         return ProbeResponse(lines=['data: {"choices":[{"delta":{"content":"OK"}}]}', "data: [DONE]"])
 
 
+class ChatOnlyProbeClient(ProbeClient):
+    def get(self, *args, **kwargs):
+        return ProbeResponse({"data": [{"id": "deepseek-chat"}, {"id": "deepseek-flash"}]})
+
+    def post(self, *args, json=None, **kwargs):
+        if json and json.get("tools"):
+            return ProbeResponse({"choices": [{"message": {"content": "I cannot call tools."}}]})
+        return super().post(*args, json=json, **kwargs)
+
+
 class AuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -69,7 +79,7 @@ class AuthTests(unittest.TestCase):
         self.store.seed_roles(DEFAULT_ROLES)
         self.store.create_user("admin", "StrongPassword123", "administrator", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(),
+            lambda provider, owner, workspace: DummyAgent(),
             workspace_dir=self.temp.name,
             project_root=Path(__file__).resolve().parents[1],
             session_db_path=self.db,
@@ -85,6 +95,64 @@ class AuthTests(unittest.TestCase):
 
     def test_api_requires_login(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)
+
+    def test_skill_draft_tables_are_not_created(self):
+        with sqlite3.connect(self.db) as connection:
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+        self.assertNotIn("app_skill_drafts", tables)
+        self.assertNotIn("app_skill_draft_messages", tables)
+
+    def test_first_admin_is_created_in_webui_without_temporary_password(self):
+        empty_db = Path(self.temp.name) / "empty.db"
+        empty_store = AuthStore(empty_db)
+        empty_store.seed_roles(DEFAULT_ROLES)
+        app = create_app(
+            lambda provider, owner, workspace: DummyAgent(),
+            workspace_dir=self.temp.name,
+            project_root=Path(__file__).resolve().parents[1],
+            session_db_path=empty_db,
+            auth_store=empty_store,
+        )
+        client = TestClient(app, client=("127.0.0.1", 50000))
+        status = client.get("/api/setup/status").json()
+        self.assertTrue(status["required"])
+        self.assertEqual(status["setup_code"], empty_store.setup_code())
+        response = client.post("/api/setup/admin", json={"password": "123456", "setup_code": status["setup_code"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["username"], "admin")
+        self.assertFalse(response.json()["must_change_password"])
+        self.assertFalse(client.get("/api/setup/status").json()["required"])
+        self.assertTrue(client.get("/api/setup/status").json()["model_required"])
+        self.assertEqual(client.get("/api/me").status_code, 200)
+        empty_store.upsert_model({
+            "name": "ready", "display_name": "Ready", "base_url": "http://llm.internal/v1",
+            "model": "chat", "api_key": "secret", "supports_vision": False,
+            "supports_tools": True, "supports_streaming": True, "enabled": True,
+        }, actor="admin")
+        self.assertFalse(client.get("/api/setup/status").json()["model_required"])
+        self.assertEqual(client.post("/api/setup/admin", json={"password": "654321", "setup_code": status["setup_code"]}).status_code, 409)
+
+    def test_first_admin_can_be_created_from_lan_during_initial_setup(self):
+        empty_db = Path(self.temp.name) / "remote-empty.db"
+        empty_store = AuthStore(empty_db)
+        empty_store.seed_roles(DEFAULT_ROLES)
+        app = create_app(
+            lambda provider, owner, workspace: DummyAgent(),
+            workspace_dir=self.temp.name,
+            project_root=Path(__file__).resolve().parents[1],
+            session_db_path=empty_db,
+            auth_store=empty_store,
+        )
+        client = TestClient(app, client=("192.168.1.20", 50000))
+        self.assertNotIn("setup_code", client.get("/api/setup/status").json())
+        denied = client.post("/api/setup/admin", json={"password": "123456", "setup_code": "000000000000"})
+        self.assertEqual(denied.status_code, 403)
+        response = client.post("/api/setup/admin", json={"password": "123456", "setup_code": empty_store.setup_code()})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["username"], "admin")
+        self.assertTrue(empty_store.has_users())
 
     def test_login_sets_secure_cookie_properties_and_returns_csrf(self):
         response = self.login()
@@ -226,6 +294,22 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["checks"]["models"]["ok"])
         self.assertIsNone(response.json()["checks"]["chat"]["ok"])
+
+    def test_model_probe_distinguishes_valid_key_from_missing_tool_support(self):
+        csrf = self.login().json()["csrf_token"]
+        with patch("adapters.server.httpx.Client", ChatOnlyProbeClient):
+            response = self.client.post(
+                "/api/admin/models/probe",
+                headers={"X-CSRF-Token": csrf},
+                json={"base_url": "https://api.deepseek.com/v1", "model": "deepseek-flash", "api_key": "valid-key"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertTrue(payload["checks"]["models"]["ok"])
+        self.assertTrue(payload["checks"]["chat"]["ok"])
+        self.assertTrue(payload["checks"]["streaming"]["ok"])
+        self.assertFalse(payload["checks"]["tools"]["ok"])
+        self.assertFalse(payload["ok"])
 
     def test_admin_can_manage_department_tree_and_million_token_quotas(self):
         csrf = self.login().json()["csrf_token"]

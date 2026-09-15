@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Menu, PanelLeftOpen } from "lucide-react";
-import { api, apiResponse, randomId, setCsrfToken } from "../api";
+import { Menu, PanelLeftOpen, Settings } from "lucide-react";
+import { api, apiResponse, parseSseEvent, randomId, setCsrfToken } from "../api";
 import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
 import { Sidebar } from "../components/Sidebar";
@@ -149,7 +149,7 @@ export function ChatPage({ identity, onLogout }: Props) {
         buffer += decoder.decode(value, { stream: true });
         const chunks = buffer.split("\n\n"); buffer = chunks.pop() || "";
         for (const chunk of chunks) {
-          const parsed = parseEvent(chunk); if (!parsed) continue;
+          const parsed = parseSseEvent(chunk); if (!parsed) continue;
           if (parsed.name === "assistant_delta") { pendingText += String(parsed.data.text || ""); scheduleText(); continue; }
           if (parsed.name === "keepalive") {
             const seconds = Number(parsed.data.elapsed_seconds);
@@ -238,6 +238,10 @@ export function ChatPage({ identity, onLogout }: Props) {
           </div>
         </header>
         <MessageList messages={messages} onConfirm={confirmTool} runElapsedSeconds={running ? elapsedSeconds : undefined} />
+        {!providers.some((item) => item.configured) && <div className="no-model-banner">
+          <span>{identity.is_admin ? "尚未配置模型，完成配置后即可开始对话。" : "系统尚未配置模型，请联系管理员。"}</span>
+          {identity.is_admin && <a href="/admin/models"><Settings size={14} />配置模型</a>}
+        </div>}
         <Composer providers={providers} provider={provider} onProvider={chooseProvider} skills={skills} attachments={attachments} onAttachments={setAttachments} directory={directory} onDirectory={setDirectory} running={running} onSend={sendMessage} onStop={stopRun} onNotice={setNotice} />
       </section>
       {notice && <button className="toast" onClick={() => setNotice("")}>{notice}</button>}
@@ -248,15 +252,4 @@ export function ChatPage({ identity, onLogout }: Props) {
 function formatElapsed(seconds: number) {
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
-}
-
-function parseEvent(chunk: string): { name: string; data: Record<string, unknown> } | null {
-  let name = "message";
-  const lines: string[] = [];
-  for (const line of chunk.split("\n")) {
-    if (line.startsWith("event:")) name = line.slice(6).trim();
-    if (line.startsWith("data:")) lines.push(line.slice(5).trimStart());
-  }
-  if (!lines.length) return null;
-  try { return { name, data: JSON.parse(lines.join("\n")) }; } catch { return null; }
 }

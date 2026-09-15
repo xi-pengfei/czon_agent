@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import tempfile
 import threading
 import time
@@ -13,6 +15,7 @@ import openai
 from adapters.server import create_app
 from core.auth_store import AuthStore, DEFAULT_ROLES
 from core.agent import AgentStopped
+from core.skills import install_skill_archive
 from main import cmd_webui
 
 
@@ -76,8 +79,9 @@ class ServerSecurityTests(unittest.TestCase):
         auth = AuthStore(db_path)
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("test_user", "TestPassword123", "administrator", must_change=False)
+        auth.create_user("other_user", "OtherPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(),
+            lambda provider, owner, workspace: DummyAgent(),
             workspace_dir=cls.temp_dir.name,
             project_root=root,
             session_db_path=db_path,
@@ -108,13 +112,14 @@ class ServerSecurityTests(unittest.TestCase):
 
     def test_malicious_input_is_not_reflected(self):
         response = self.client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=self.headers,
             json={
                 "text": "C:\\boot.ini",
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": self.session_id,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 422)
@@ -122,26 +127,59 @@ class ServerSecurityTests(unittest.TestCase):
 
     def test_attachment_integer_overflow_is_rejected(self):
         response = self.client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=self.headers,
             json={
                 "text": "hello",
                 "attachments": [{
-                    "path": "uploads/" + "b" * 32 + ".txt",
+                    "path": "uploads/" + "a" * 16 + "/" + "b" * 32 + ".txt",
                     "name": "a.txt",
                     "mime": "text/plain",
                     "size": 999999999999,
                 }],
                 "provider": "qwen",
                 "session_id": self.session_id,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("999999999999", response.text)
 
+    def test_uploaded_attachment_is_owned_by_uploader(self):
+        upload = self.client.post(
+            "/api/upload", headers=self.headers,
+            files={"file": ("note.txt", b"private", "text/plain")},
+        )
+        self.assertEqual(upload.status_code, 200)
+        attachment = upload.json()
+        self.assertRegex(attachment["path"], r"^uploads/[0-9a-f]{16}/[0-9a-f]{32}\.txt$")
+        uploaded_path = Path(__file__).resolve().parents[1] / attachment["path"]
+        self.assertTrue(uploaded_path.is_file())
+
+        other = TestClient(self.client.app)
+        login = other.post(
+            "/api/auth/login", json={"username": "other_user", "password": "OtherPassword123"},
+        )
+        response = other.post(
+            "/api/chat/stream", headers={"X-CSRF-Token": login.json()["csrf_token"]},
+            json={
+                "text": "read", "attachments": [attachment], "provider": "qwen",
+                "session_id": "7" * 32,
+                "run_id": "0" * 32,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "附件不存在或不属于当前用户")
+        owner_response = self.client.post(
+            "/api/chat/stream", headers=self.headers,
+            json={"text": "read", "attachments": [attachment], "provider": "qwen", "session_id": "6" * 32, "run_id": "0" * 32},
+        )
+        self.assertEqual(owner_response.status_code, 200)
+        self.assertFalse(uploaded_path.exists())
+
     def test_local_directory_manifest_is_bounded_untrusted_context(self):
         response = self.client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=self.headers,
             json={
                 "text": "桌面上有哪些文件？",
@@ -154,6 +192,7 @@ class ServerSecurityTests(unittest.TestCase):
                 },
                 "provider": "qwen",
                 "session_id": self.session_id,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -162,7 +201,7 @@ class ServerSecurityTests(unittest.TestCase):
 
     def test_local_directory_rejects_absolute_client_path(self):
         response = self.client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=self.headers,
             json={
                 "text": "查看目录",
@@ -175,6 +214,7 @@ class ServerSecurityTests(unittest.TestCase):
                 },
                 "provider": "qwen",
                 "session_id": self.session_id,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 422)
@@ -204,7 +244,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("quiet_user", "QuietPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: QuietAgent(), workspace_dir=self.temp_dir.name,
+            lambda provider, owner, workspace: QuietAgent(), workspace_dir=self.temp_dir.name,
             project_root=root, session_db_path=db_path, auth_store=auth,
         )
         client = TestClient(app)
@@ -230,7 +270,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.create_user("alice", "AlicePassword123", "standard", must_change=False)
         auth.create_user("bob", "BobPassword12345", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(), workspace_dir=self.temp_dir.name,
+            lambda provider, owner, workspace: DummyAgent(), workspace_dir=self.temp_dir.name,
             project_root=root, session_db_path=db_path, auth_store=auth,
         )
         alice = TestClient(app)
@@ -239,13 +279,14 @@ class ServerSecurityTests(unittest.TestCase):
         bob.post("/api/auth/login", json={"username": "bob", "password": "BobPassword12345"})
         session_id = "e" * 32
         response = alice.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers={"X-CSRF-Token": alice_csrf},
             json={
                 "text": "Alice private message",
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": session_id,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -277,8 +318,14 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("alice", "AlicePassword123", "standard", must_change=False)
         auth.create_user("bob", "BobPassword12345", "standard", must_change=False)
+        user_workspaces = []
+
+        def artifact_agent_factory(provider, owner, user_workspace):
+            user_workspaces.append(Path(user_workspace))
+            return ArtifactAgent(Path(user_workspace))
+
         app = create_app(
-            lambda provider, owner: ArtifactAgent(workspace), workspace_dir=workspace,
+            artifact_agent_factory, workspace_dir=workspace,
             project_root=root, session_db_path=db_path, auth_store=auth,
         )
         client = TestClient(app)
@@ -291,26 +338,43 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
         self.assertEqual(client.get("/download/result.txt").status_code, 404)
         response = client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers={"X-CSRF-Token": login.json()["csrf_token"]},
             json={
                 "text": "export",
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": "9" * 32,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(response.status_code, 200)
-        artifact = response.json()["artifacts"][0]
+        history = client.get("/api/sessions/" + "9" * 32).json()
+        artifact = history["messages"][1]["artifacts"][0]
         download = client.get(artifact["download_url"])
         self.assertEqual(download.status_code, 200)
         self.assertEqual(download.content, b"workbook-result")
-        history = client.get("/api/sessions/" + "9" * 32).json()
         self.assertEqual(history["messages"][1]["artifacts"][0]["id"], artifact["id"])
+        stored_artifacts = list((db_path.parent / "artifacts").iterdir())
+        self.assertTrue(stored_artifacts)
 
         bob = TestClient(app)
-        bob.post("/api/auth/login", json={"username": "bob", "password": "BobPassword12345"})
+        bob_login = bob.post("/api/auth/login", json={"username": "bob", "password": "BobPassword12345"})
         self.assertEqual(bob.get(artifact["download_url"]).status_code, 404)
+        bob_response = bob.post(
+            "/api/chat/stream",
+            headers={"X-CSRF-Token": bob_login.json()["csrf_token"]},
+            json={"text": "export", "attachments": [], "provider": "qwen", "session_id": "8" * 32, "run_id": "0" * 32},
+        )
+        self.assertEqual(bob_response.status_code, 200)
+        self.assertEqual(len(set(user_workspaces)), 2)
+        self.assertTrue(
+            all(path.is_relative_to((workspace / "users").resolve()) for path in user_workspaces),
+            repr(user_workspaces),
+        )
+        deleted = client.delete("/api/sessions/" + "9" * 32, headers={"X-CSRF-Token": login.json()["csrf_token"]})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(all(not path.exists() for path in stored_artifacts))
 
     def test_skill_catalog_and_execution_are_filtered_by_user(self):
         root = Path(__file__).resolve().parents[1]
@@ -319,7 +383,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("skill_user", "SkillPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(),
+            lambda provider, owner, workspace: DummyAgent(),
             workspace_dir=self.temp_dir.name,
             project_root=root,
             session_db_path=db_path,
@@ -347,7 +411,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in catalog.json()["skills"]], ["invoice-ocr"])
 
         denied = client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=headers,
             json={
                 "text": "run it",
@@ -355,22 +419,24 @@ class ServerSecurityTests(unittest.TestCase):
                 "provider": "qwen",
                 "session_id": "f" * 32,
                 "skill": "daily-report",
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(denied.status_code, 403)
         denied_model = client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=headers,
             json={
                 "text": "run it",
                 "attachments": [],
                 "provider": "kimi",
                 "session_id": "f" * 32,
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(denied_model.status_code, 403)
         allowed = client.post(
-            "/api/chat",
+            "/api/chat/stream",
             headers=headers,
             json={
                 "text": "run it",
@@ -378,6 +444,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "provider": "qwen",
                 "session_id": "f" * 32,
                 "skill": "invoice-ocr",
+                "run_id": "0" * 32,
             },
         )
         self.assertEqual(allowed.status_code, 200)
@@ -396,7 +463,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.create_user("skill_admin", "SkillAdmin123", "administrator", must_change=False)
         auth.create_user("skill_reader", "SkillReader123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(), auth_store=auth,
+            lambda provider, owner, workspace: DummyAgent(), auth_store=auth,
             workspace_dir=root / "workspace", project_root=root,
             session_db_path=root / "skills.db", skills_dir=skills,
         )
@@ -409,6 +476,17 @@ class ServerSecurityTests(unittest.TestCase):
 
         self.assertEqual(reader.get("/api/admin/skills").status_code, 403)
         self.assertEqual(reader.post("/api/admin/skills/rescan", headers=reader_headers).status_code, 403)
+
+        auth.upsert_role("skill_manager", "*", "*", "*", False, True, "skill_admin")
+        auth.create_user("delegated_manager", "Delegated123", "skill_manager", must_change=False)
+        delegated = TestClient(app)
+        delegated_login = delegated.post(
+            "/api/auth/login", json={"username": "delegated_manager", "password": "Delegated123"},
+        )
+        delegated_headers = {"X-CSRF-Token": delegated_login.json()["csrf_token"]}
+        self.assertTrue(delegated_login.json()["manage_skills"])
+        self.assertEqual(delegated.get("/api/admin/skills").status_code, 200)
+        self.assertEqual(delegated.post("/api/admin/skills/rescan", headers=delegated_headers).status_code, 200)
         listed = admin.get("/api/admin/skills").json()["skills"]
         self.assertEqual(listed[0]["name"], "sample-skill")
         self.assertTrue(listed[0]["enabled"])
@@ -428,7 +506,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("upload_admin", "UploadAdmin123", "administrator", must_change=False)
         app = create_app(
-            lambda provider, owner: DummyAgent(), auth_store=auth,
+            lambda provider, owner, workspace: DummyAgent(), auth_store=auth,
             workspace_dir=root / "workspace", project_root=root,
             session_db_path=root / "skills.db", skills_dir=skills,
         )
@@ -449,6 +527,46 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue((skills / "uploaded-skill" / "SKILL.md").is_file())
 
+        updated = io.BytesIO()
+        with zipfile.ZipFile(updated, "w") as archive:
+            archive.writestr(
+                "uploaded-skill/SKILL.md",
+                "---\nname: uploaded-skill\ndescription: Updated skill\n---\nUpdated instructions\n",
+            )
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("updated.zip", updated.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("先停用", response.json()["detail"])
+        self.assertNotIn("Updated instructions", (skills / "uploaded-skill" / "SKILL.md").read_text())
+
+        self.assertEqual(client.put(
+            "/api/admin/skills/uploaded-skill", headers=headers, json={"enabled": False},
+        ).status_code, 200)
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("updated.zip", updated.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["action"], "updated")
+        self.assertIn("Updated instructions", (skills / "uploaded-skill" / "SKILL.md").read_text())
+        self.assertFalse(auth.list_skill_settings()["uploaded-skill"]["enabled"])
+
+        unsafe_update = io.BytesIO()
+        with zipfile.ZipFile(unsafe_update, "w") as archive:
+            archive.writestr(
+                "uploaded-skill/SKILL.md",
+                "---\nname: uploaded-skill\ndescription: Unsafe update\n---\nRun the script.\n",
+            )
+            archive.writestr("uploaded-skill/scripts/run.sh", "sudo reboot\n")
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("unsafe-update.zip", unsafe_update.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Updated instructions", (skills / "uploaded-skill" / "SKILL.md").read_text())
+
         malicious = io.BytesIO()
         with zipfile.ZipFile(malicious, "w") as archive:
             archive.writestr("../outside.txt", "unsafe")
@@ -461,6 +579,55 @@ class ServerSecurityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertFalse((root / "outside.txt").exists())
+
+        unsafe = io.BytesIO()
+        with zipfile.ZipFile(unsafe, "w") as archive:
+            archive.writestr(
+                "unsafe-skill/SKILL.md",
+                "---\nname: unsafe-skill\ndescription: Unsafe skill\n---\nRun the script.\n",
+            )
+            archive.writestr(
+                "unsafe-skill/scripts/run.py",
+                "import os\nkey = os.getenv('DEEPSEEK_API_KEY')\n",
+            )
+        response = client.post(
+            "/api/admin/skills/upload", headers=headers,
+            files={"file": ("unsafe.zip", unsafe.getvalue(), "application/zip")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("统一模型接口", response.json()["detail"])
+        self.assertFalse((skills / "unsafe-skill").exists())
+
+    def test_skill_update_restores_previous_version_when_swap_fails(self):
+        root = Path(self.temp_dir.name) / "skill-restore-root"
+        skills = root / "skills"
+        installed = skills / "restore-skill"
+        installed.mkdir(parents=True)
+        original = "---\nname: restore-skill\ndescription: Original\n---\nOriginal instructions\n"
+        (installed / "SKILL.md").write_text(original, encoding="utf-8")
+        archive_path = root / "update.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr(
+                "restore-skill/SKILL.md",
+                "---\nname: restore-skill\ndescription: Updated\n---\nUpdated instructions\n",
+            )
+
+        real_replace = os.replace
+        replace_count = 0
+
+        def fail_new_version(source, destination):
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 2:
+                raise OSError("simulated swap failure")
+            return real_replace(source, destination)
+
+        with patch("core.skills.os.replace", side_effect=fail_new_version):
+            with self.assertRaisesRegex(ValueError, "无法读取或安装"):
+                install_skill_archive(archive_path, skills, replace_names={"restore-skill"})
+
+        self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), original)
+        self.assertFalse(any(root.glob(".skill-backup-*")))
 
     def test_disabled_skill_is_removed_from_webui_catalog(self):
         root = Path(self.temp_dir.name) / "skill-runtime-root"
@@ -510,7 +677,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("block_user", "BlockPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: BlockingAgent(started),
+            lambda provider, owner, workspace: BlockingAgent(started),
             workspace_dir=self.temp_dir.name,
             project_root=root,
             session_db_path=db_path,
@@ -550,7 +717,7 @@ class ServerSecurityTests(unittest.TestCase):
             },
         )
         self.assertEqual(duplicate.status_code, 409)
-        self.assertEqual(duplicate.json()["detail"], "当前会话已有任务正在运行")
+        self.assertEqual(duplicate.json()["detail"], "当前账号已有任务正在运行")
         stop = client.post(
             "/api/chat/stop",
             headers=headers,
@@ -568,7 +735,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("timeout_user", "TimeoutPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: TimeoutAgent(), workspace_dir=self.temp_dir.name,
+            lambda provider, owner, workspace: TimeoutAgent(), workspace_dir=self.temp_dir.name,
             project_root=root, session_db_path=db_path, auth_store=auth,
         )
         client = TestClient(app)
@@ -594,7 +761,7 @@ class ServerSecurityTests(unittest.TestCase):
         auth.seed_roles(DEFAULT_ROLES)
         auth.create_user("progress_user", "ProgressPassword123", "standard", must_change=False)
         app = create_app(
-            lambda provider, owner: ProgressAgent(),
+            lambda provider, owner, workspace: ProgressAgent(),
             workspace_dir=self.temp_dir.name,
             project_root=root,
             session_db_path=db_path,
