@@ -56,7 +56,7 @@ def run_interactive(agent):
 
     while True:
         try:
-            text = console.input("[bold cyan]>>> [/bold cyan]").strip()
+            text = console.input("[bold cyan]> [/bold cyan]").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]已退出[/dim]")
             break

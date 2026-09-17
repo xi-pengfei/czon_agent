@@ -413,11 +413,11 @@ class AuthStore:
             )
             self._audit(connection, actor, "upsert_department", department_id)
 
-    def reset_password(self, username: str, password: str, actor: str):
+    def reset_password(self, username: str, password: str, actor: str, must_change: bool = True):
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE app_users SET password_hash=?,must_change_password=1 WHERE username=?",
-                (hash_password(password), username),
+                "UPDATE app_users SET password_hash=?,must_change_password=? WHERE username=?",
+                (hash_password(password), int(must_change), username),
             )
             if not cursor.rowcount:
                 return False

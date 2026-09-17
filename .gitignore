@@ -35,6 +35,7 @@ build/
 frontend/node_modules/
 .packaging-build/
 release/
+*.czon-backup
 
 # 企业私有 Skills：仅在客户环境单独部署，不进入公共仓库
 skills/consumable-inventory/

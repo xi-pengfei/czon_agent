@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from adapters.server import create_app
 from core.auth_store import AuthStore, DEFAULT_ROLES
 from core.session_store import SessionStore
+from main import cmd_reset_admin
 
 
 class DummyAgent:
@@ -95,6 +96,25 @@ class AuthTests(unittest.TestCase):
 
     def test_api_requires_login(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)
+
+    def test_local_admin_recovery_resets_password_without_forced_change(self):
+        self.assertEqual(self.login().status_code, 200)
+        answers = iter(("new-password", "new-password"))
+
+        cmd_reset_admin(
+            {"webui": {"session_db": str(self.db)}},
+            secret_fn=lambda _: next(answers),
+        )
+
+        self.assertEqual(self.client.get("/api/me").status_code, 401)
+        self.assertEqual(self.client.post(
+            "/api/auth/login", json={"username": "admin", "password": "StrongPassword123"},
+        ).status_code, 401)
+        response = self.client.post(
+            "/api/auth/login", json={"username": "admin", "password": "new-password"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["must_change_password"])
 
     def test_skill_draft_tables_are_not_created(self):
         with sqlite3.connect(self.db) as connection:

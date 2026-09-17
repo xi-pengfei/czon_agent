@@ -629,6 +629,68 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), original)
         self.assertFalse(any(root.glob(".skill-backup-*")))
 
+    def test_skill_update_preserves_optional_runtime_and_data(self):
+        root = Path(self.temp_dir.name) / "skill-state-root"
+        skills = root / "skills"
+        installed = skills / "stateful-skill"
+        (installed / "runtime").mkdir(parents=True)
+        (installed / "data").mkdir()
+        (installed / "SKILL.md").write_text(
+            "---\nname: stateful-skill\ndescription: Original\n---\nOriginal instructions\n",
+            encoding="utf-8",
+        )
+        (installed / "runtime" / "history.json").write_text('{"submitted": true}', encoding="utf-8")
+        (installed / "data" / "mapping.json").write_text('{"account": "1001"}', encoding="utf-8")
+        archive_path = root / "update.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr(
+                "stateful-skill/SKILL.md",
+                "---\nname: stateful-skill\ndescription: Updated\n---\nUpdated instructions\n",
+            )
+
+        install_skill_archive(archive_path, skills, replace_names={"stateful-skill"})
+
+        self.assertIn("Updated instructions", (installed / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual((installed / "runtime" / "history.json").read_text(encoding="utf-8"), '{"submitted": true}')
+        self.assertEqual((installed / "data" / "mapping.json").read_text(encoding="utf-8"), '{"account": "1001"}')
+        self.assertFalse(any(root.glob(".skill-backup-*")))
+
+    def test_skill_update_restores_state_when_state_move_fails(self):
+        root = Path(self.temp_dir.name) / "skill-state-restore-root"
+        skills = root / "skills"
+        installed = skills / "stateful-skill"
+        (installed / "runtime").mkdir(parents=True)
+        (installed / "data").mkdir()
+        original = "---\nname: stateful-skill\ndescription: Original\n---\nOriginal instructions\n"
+        (installed / "SKILL.md").write_text(original, encoding="utf-8")
+        (installed / "runtime" / "history.json").write_text("history", encoding="utf-8")
+        (installed / "data" / "mapping.json").write_text("mapping", encoding="utf-8")
+        archive_path = root / "update.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr(
+                "stateful-skill/SKILL.md",
+                "---\nname: stateful-skill\ndescription: Updated\n---\nUpdated instructions\n",
+            )
+
+        real_replace = os.replace
+        replace_count = 0
+
+        def fail_second_state_move(source, destination):
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 4:
+                raise OSError("simulated state move failure")
+            return real_replace(source, destination)
+
+        with patch("core.skills.os.replace", side_effect=fail_second_state_move):
+            with self.assertRaisesRegex(ValueError, "无法读取或安装"):
+                install_skill_archive(archive_path, skills, replace_names={"stateful-skill"})
+
+        self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), original)
+        self.assertEqual((installed / "runtime" / "history.json").read_text(encoding="utf-8"), "history")
+        self.assertEqual((installed / "data" / "mapping.json").read_text(encoding="utf-8"), "mapping")
+        self.assertFalse(any(root.glob(".skill-backup-*")))
+
     def test_disabled_skill_is_removed_from_webui_catalog(self):
         root = Path(self.temp_dir.name) / "skill-runtime-root"
         skill = root / "skills" / "runtime-skill"

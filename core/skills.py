@@ -29,6 +29,7 @@ MAX_SKILL_ARCHIVE_FILES = 5_000
 MAX_SKILL_ARCHIVE_BYTES = 200 * 1024 * 1024
 MAX_SKILL_UNPACKED_BYTES = 500 * 1024 * 1024
 _ALLOWED_ROOT_ITEMS = {"SKILL.md", "scripts", "references", "assets"}
+_PRESERVED_STATE_DIRS = ("runtime", "data")
 _IGNORED_NAMES = {".DS_Store", "__pycache__"}
 _TEXT_SUFFIXES = {
     ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
@@ -343,18 +344,32 @@ def install_skill_archive(archive_path: Path, skills_dir: Path, replace_names: O
                 raise SkillArchiveError(f"Skill {meta.name} 已存在，请先停用后再上传更新")
             backup_parent = Path(tempfile.mkdtemp(prefix=".skill-backup-", dir=skills_dir.parent))
             backup = backup_parent / meta.name
+            update_complete = False
+            moved_state = []
             try:
                 os.replace(destination, backup)
                 try:
                     os.replace(skill_root, destination)
-                except OSError:
+                    for dirname in _PRESERVED_STATE_DIRS:
+                        state_dir = backup / dirname
+                        if state_dir.is_dir() and not state_dir.is_symlink():
+                            os.replace(state_dir, destination / dirname)
+                            moved_state.append(dirname)
+                    update_complete = True
+                except OSError as update_error:
                     try:
+                        for dirname in reversed(moved_state):
+                            current_state = destination / dirname
+                            if current_state.exists():
+                                os.replace(current_state, backup / dirname)
+                        if destination.exists():
+                            shutil.rmtree(destination)
                         os.replace(backup, destination)
                     except OSError as restore_error:
                         raise SkillArchiveError(f"Skill 更新失败，旧版本保留在 {backup}") from restore_error
-                    raise
+                    raise update_error
             finally:
-                if destination.exists():
+                if update_complete or (destination.exists() and not backup.exists()):
                     shutil.rmtree(backup_parent, ignore_errors=True)
         else:
             shutil.move(str(skill_root), destination)

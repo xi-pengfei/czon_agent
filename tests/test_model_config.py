@@ -1,13 +1,63 @@
 import unittest
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.auth_store import AuthStore
 from core.llm import get_provider_configs, make_llm_from_config
+from main import _choose_start_mode, _select_cli_provider
 
 
 class ModelConfigTests(unittest.TestCase):
+    def test_start_menu_defaults_to_webui_and_allows_cli(self):
+        self.assertEqual(_choose_start_mode(lambda _: ""), "webui")
+        self.assertEqual(_choose_start_mode(lambda _: "2"), "cli")
+
+    def test_first_cli_run_guides_model_setup_and_saves_encrypted_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "models.db"
+            config = {
+                "webui": {"session_db": str(db_path)},
+                "agent": {"llm_read_timeout_seconds": 10},
+            }
+            answers = iter(("1", "1"))
+            client = SimpleNamespace(
+                models=SimpleNamespace(list=lambda: SimpleNamespace(data=[SimpleNamespace(id="deepseek-chat")])),
+                chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]
+                ))),
+                close=lambda: None,
+            )
+            with patch("openai.OpenAI", return_value=client):
+                selected = _select_cli_provider(
+                    config,
+                    input_fn=lambda _: next(answers),
+                    secret_fn=lambda _: "secret-api-key",
+                )
+
+            store = AuthStore(db_path)
+            self.assertEqual(selected, "deepseek")
+            self.assertEqual(store.get_model_api_key("deepseek"), "secret-api-key")
+            self.assertNotIn(b"secret-api-key", db_path.read_bytes())
+
+    def test_cli_can_choose_an_existing_database_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "models.db"
+            store = AuthStore(db_path)
+            for name in ("first", "second"):
+                store.upsert_model({
+                    "name": name, "display_name": name.title(), "base_url": "http://llm.internal/v1",
+                    "model": f"{name}-model", "api_key": f"{name}-secret",
+                    "supports_vision": False, "enabled": True,
+                }, actor="test")
+            selected = _select_cli_provider(
+                {"webui": {"session_db": str(db_path)}},
+                input_fn=lambda _: "2",
+                secret_fn=lambda _: "unused",
+            )
+            self.assertEqual(selected, "second")
+
     def test_custom_openai_compatible_provider_is_accepted(self):
         providers = get_provider_configs({
             "providers": {

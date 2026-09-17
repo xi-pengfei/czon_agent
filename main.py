@@ -3,12 +3,17 @@
 czon Agent 统一入口
 
 子命令：
-  python main.py                       # 交互式 REPL
+  python main.py                       # 选择 WebUI 或 CLI
+  python main.py cli                   # 交互式 CLI
   python main.py "消息内容"             # 单次执行并退出
   python main.py webui                 # 按 config.yaml 启动 WebUI
   python main.py setup-code            # 查看首次管理员安装码
+  python main.py reset-admin           # 重置管理员密码
+  python main.py backup                # 创建迁移备份
+  python main.py restore <备份文件>     # 恢复迁移备份
 """
 import argparse
+import getpass
 import os
 import sys
 from pathlib import Path
@@ -20,6 +25,17 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 load_dotenv(PROJECT_ROOT / ".env")
+
+_CLI_MODEL_PRESETS = (
+    {"name": "deepseek", "display_name": "DeepSeek", "base_url": "https://api.deepseek.com/v1",
+     "supports_vision": False, "supports_tools": True, "supports_streaming": True},
+    {"name": "kimi", "display_name": "Kimi", "base_url": "https://api.moonshot.cn/v1",
+     "supports_vision": True, "supports_tools": True, "supports_streaming": True},
+    {"name": "qwen", "display_name": "通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+     "supports_vision": True, "supports_tools": True, "supports_streaming": True},
+    {"name": "ollama", "display_name": "Ollama（本机或内网）", "base_url": "http://127.0.0.1:11434/v1",
+     "api_key": "ollama", "supports_vision": False, "supports_tools": True, "supports_streaming": True},
+)
 
 
 def load_config() -> dict:
@@ -95,12 +111,110 @@ def cmd_cli(config: dict, message: Optional[str] = None):
     """CLI 模式"""
     from adapters.cli import run_interactive, run_once
 
-    agent = build_agent(config)
+    provider = _select_cli_provider(config)
+    agent = build_agent(config, provider_override=provider)
 
     if message:
         run_once(agent, message)
     else:
         run_interactive(agent)
+
+
+def _select_cli_provider(config: dict, input_fn=None, secret_fn=None) -> str:
+    from core.auth_store import AuthStore
+
+    input_fn = input_fn or input
+    secret_fn = secret_fn or getpass.getpass
+    webui_cfg = config.get("webui") or {}
+    db_path = Path(webui_cfg.get("session_db", "./data/czon_agent.db"))
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    store = AuthStore(db_path)
+    configured = [item for item in store.list_models() if item["api_key_configured"]]
+    configured_names = {item["name"] for item in configured}
+    preferred = os.getenv("CZON_ACTIVE_PROVIDER") or str(config.get("active_provider", ""))
+    if preferred in configured_names:
+        return preferred
+    if not sys.stdin.isatty() and input_fn is input:
+        raise RuntimeError("CLI 尚未选择模型，请在交互式终端运行 python main.py cli，或先使用 WebUI 配置")
+    if configured:
+        print("\n请选择本次 CLI 使用的模型：")
+        for index, item in enumerate(configured, 1):
+            print(f"  {index}. {item['display_name']} · {item['model']}")
+        selected = _read_choice(input_fn, len(configured), "模型")
+        return configured[selected - 1]["name"]
+    return _configure_first_cli_model(config, store, input_fn, secret_fn)
+
+
+def _configure_first_cli_model(config: dict, store, input_fn, secret_fn) -> str:
+    from openai import OpenAI
+
+    print("\n尚未配置大模型，现在完成首次设置。")
+    for index, preset in enumerate(_CLI_MODEL_PRESETS, 1):
+        print(f"  {index}. {preset['display_name']}")
+    selected = _read_choice(input_fn, len(_CLI_MODEL_PRESETS), "服务商")
+    preset = dict(_CLI_MODEL_PRESETS[selected - 1])
+    api_key = preset.pop("api_key", "") or secret_fn("API Key（输入时不会显示）：").strip()
+    if not api_key:
+        raise RuntimeError("API Key 不能为空")
+
+    print("正在获取模型列表...")
+    timeout = int((config.get("agent") or {}).get("llm_read_timeout_seconds", 60))
+    client = OpenAI(api_key=api_key, base_url=preset["base_url"], max_retries=0, timeout=timeout)
+    try:
+        models = sorted({item.id for item in client.models.list().data if getattr(item, "id", None)})
+        if not models:
+            raise RuntimeError("接口没有返回可用模型")
+        print("请选择使用的模型：")
+        for index, name in enumerate(models, 1):
+            print(f"  {index}. {name}")
+        model = models[_read_choice(input_fn, len(models), "模型") - 1]
+        print("正在进行实际对话测试...")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with exactly OK."}],
+            max_tokens=32,
+            temperature=0,
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("模型没有返回有效对话")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("模型连接测试失败，请检查网络、API Key 和服务状态") from exc
+    finally:
+        client.close()
+
+    store.upsert_model({
+        **preset,
+        "model": model,
+        "api_key": api_key,
+        "enabled": True,
+    }, actor="cli_setup")
+    print(f"配置完成：{preset['display_name']} · {model}\n")
+    return preset["name"]
+
+
+def _read_choice(input_fn, count: int, label: str) -> int:
+    while True:
+        value = input_fn(f"请选择{label} [1-{count}]：").strip()
+        if value.isdigit() and 1 <= int(value) <= count:
+            return int(value)
+        print("输入无效，请输入对应的数字。")
+
+
+def _choose_start_mode(input_fn=None) -> str:
+    input_fn = input_fn or input
+    print("\n企业 AI 智能体")
+    print("  1. 启动 WebUI（推荐）")
+    print("  2. 使用命令行 CLI")
+    choice = input_fn("请选择 [1]：").strip()
+    if choice in {"", "1"}:
+        return "webui"
+    if choice == "2":
+        return "cli"
+    raise RuntimeError("请输入 1 或 2")
 
 
 def cmd_webui(config: dict, args):
@@ -226,6 +340,67 @@ def cmd_setup_code(config: dict):
         print(f"首次管理员安装码：{store.setup_code()}")
 
 
+def cmd_reset_admin(config: dict, secret_fn=None):
+    from core.auth_store import AuthStore
+
+    secret_fn = secret_fn or getpass.getpass
+    password = secret_fn("请输入 admin 的新密码（至少 6 位，不会显示）：")
+    confirmation = secret_fn("请再次输入新密码：")
+    if password != confirmation:
+        raise RuntimeError("两次输入的密码不一致")
+    if not 6 <= len(password) <= 256:
+        raise RuntimeError("密码长度必须为 6 到 256 位")
+
+    session_db = (config.get("webui") or {}).get("session_db", "./data/czon_agent.db")
+    db_path = Path(session_db)
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    store = AuthStore(db_path)
+    if not store.reset_password("admin", password, actor="local_recovery", must_change=False):
+        raise RuntimeError("admin 账号不存在，请先完成首次管理员设置")
+    print("admin 密码已重置，原有登录会话已注销。")
+
+
+def cmd_backup(config: dict, output_name: Optional[str] = None, secret_fn=None):
+    from core.migration import create_backup
+
+    _require_webui_stopped(config)
+    secret_fn = secret_fn or getpass.getpass
+    password = secret_fn("请设置迁移备份密码（至少 6 位，不会显示）：")
+    if password != secret_fn("请再次输入备份密码："):
+        raise RuntimeError("两次输入的备份密码不一致")
+    if output_name:
+        output = Path(output_name)
+    else:
+        from datetime import datetime
+        output = PROJECT_ROOT / f"czon_agent_backup_{datetime.now():%Y%m%d_%H%M%S}.czon-backup"
+    result = create_backup(PROJECT_ROOT, output, password)
+    print(f"迁移备份已创建：{result}")
+
+
+def cmd_restore(config: dict, backup_name: Optional[str], secret_fn=None):
+    from core.migration import restore_backup
+
+    if not backup_name:
+        raise RuntimeError("请指定备份文件，例如：python main.py restore czon_agent_backup_xxx.czon-backup")
+    _require_webui_stopped(config)
+    secret_fn = secret_fn or getpass.getpass
+    password = secret_fn("请输入迁移备份密码（不会显示）：")
+    restore_backup(PROJECT_ROOT, Path(backup_name), password)
+    print("迁移备份已恢复。启动服务后请先做只读试运行，确认无误后再执行任何外部写入或提交。")
+
+
+def _require_webui_stopped(config: dict) -> None:
+    import socket
+
+    port = _positive_int(config.get("webui") or {}, "port")
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            raise RuntimeError(f"请先停止 WebUI（端口 {port} 仍在使用），再执行迁移操作")
+    except (ConnectionRefusedError, TimeoutError, OSError):
+        return
+
+
 def _render_rule(rule, workspace_dir: str) -> str:
     return str(rule).replace("{workspace_dir}", workspace_dir.rstrip("/"))
 
@@ -245,7 +420,7 @@ def main():
         prog="czon_agent",
         description="czon Agent — 极简 Python Agent Runtime",
     )
-    parser.add_argument("command_or_message", nargs="?", help="webui / 或直接输入消息")
+    parser.add_argument("command_or_message", nargs="?", help="webui / cli / setup-code / reset-admin / backup / restore / 或直接输入消息")
     parser.add_argument("message_parts", nargs=argparse.REMAINDER, help="消息剩余内容")
 
     args = parser.parse_args()
@@ -266,13 +441,22 @@ def main():
         command = args.command_or_message
         if command == "webui":
             cmd_webui(config, args)
+        elif command == "cli":
+            cmd_cli(config)
         elif command == "setup-code":
             cmd_setup_code(config)
+        elif command == "reset-admin":
+            cmd_reset_admin(config)
+        elif command == "backup":
+            cmd_backup(config, args.message_parts[0] if args.message_parts else None)
+        elif command == "restore":
+            cmd_restore(config, args.message_parts[0] if args.message_parts else None)
         elif command:
             message = " ".join([command] + args.message_parts).strip()
             cmd_cli(config, message=message)
         else:
-            cmd_cli(config)
+            mode = _choose_start_mode()
+            cmd_webui(config, args) if mode == "webui" else cmd_cli(config)
     except (RuntimeError, KeyError) as exc:
         print(f"[启动失败] {exc}", file=sys.stderr)
         sys.exit(2)
