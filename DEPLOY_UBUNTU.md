@@ -141,10 +141,74 @@ journalctl --user -b -u czon_agent.service --no-pager
 
 生产环境统一通过 `systemctl --user` 管理，不要直接运行 `.venv/bin/python main.py`。
 
-## 需要备份的内容
+## 迁移备份与恢复
+
+迁移备份会生成一个加密的 `.czon-backup` 文件，其中包含用户、模型与权限数据库、数据库密钥、企业业务配置、全部 Skills 及其运行记录、上传文件和用户工作区。日志、Python 虚拟环境、程序源码和 `config.yaml` 不会进入备份。
+
+### 1. 在原服务器创建备份
+
+先停止 WebUI，避免备份过程中仍有任务写入数据：
+
+```bash
+systemctl --user stop czon_agent.service
+cd ~/czon_agent
+.venv/bin/python main.py backup
+```
+
+按提示设置并确认备份密码。完成后会显示备份文件的完整路径，例如：
 
 ```text
-~/czon_agent/data/
-~/czon_agent/.env
-~/czon_agent/skills/ 中后来安装的企业私有 Skills
+~/czon_agent/czon_agent_backup_20260918_120000.czon-backup
 ```
+
+备份完成后重新启动服务：
+
+```bash
+systemctl --user start czon_agent.service
+```
+
+备份密码无法找回，请与备份文件分开妥善保存。
+
+### 2. 将备份下载到自己的电脑
+
+把下面示例中的文件名、Ubuntu 用户名和服务器 IP 替换成实际内容。
+
+Windows 打开 PowerShell：
+
+```powershell
+scp ubuntu@192.168.1.100:~/czon_agent/czon_agent_backup_20260918_120000.czon-backup "$env:USERPROFILE\Downloads\"
+```
+
+macOS 打开“终端”：
+
+```bash
+scp ubuntu@192.168.1.100:~/czon_agent/czon_agent_backup_20260918_120000.czon-backup ~/Downloads/
+```
+
+### 3. 恢复到新服务器
+
+先按照本文前面的步骤，在新服务器安装好同版本或更新版本的 `czon_agent`。然后从自己的电脑把备份上传到新服务器。
+
+Windows PowerShell：
+
+```powershell
+scp "$env:USERPROFILE\Downloads\czon_agent_backup_20260918_120000.czon-backup" ubuntu@192.168.1.100:~/
+```
+
+macOS 终端：
+
+```bash
+scp ~/Downloads/czon_agent_backup_20260918_120000.czon-backup ubuntu@192.168.1.100:~/
+```
+
+登录新服务器，停止 WebUI 后执行恢复：
+
+```bash
+systemctl --user stop czon_agent.service
+cd ~/czon_agent
+.venv/bin/python main.py restore ~/czon_agent_backup_20260918_120000.czon-backup
+systemctl --user start czon_agent.service
+systemctl --user status czon_agent.service --no-pager
+```
+
+恢复时输入创建备份时设置的密码。恢复完成后，先登录网页检查用户、模型和 Skills，再做只读试运行；确认无误后再执行任何外部系统写入或提交。
