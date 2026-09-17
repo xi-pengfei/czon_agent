@@ -38,12 +38,12 @@ export function AuthView({ identity, setupRequired, setupCode, onAuthenticated }
     const form = new FormData(event.currentTarget);
     setBusy(true); setError("");
     try {
-      await api("/api/auth/change-password", {
+      const user = await api<Identity>("/api/auth/change-password", {
         method: "POST",
         body: JSON.stringify({ old_password: form.get("old_password"), new_password: form.get("new_password") }),
       });
-      setCsrfToken("");
-      onAuthenticated(null);
+      setCsrfToken(user.csrf_token);
+      onAuthenticated(user);
     } catch (exception) {
       setError(exception instanceof Error ? exception.message : "密码修改失败");
     } finally { setBusy(false); }
@@ -102,7 +102,7 @@ export function AuthView({ identity, setupRequired, setupCode, onAuthenticated }
             <label>{changing ? "新密码" : "密码"}<input name={changing ? "new_password" : "password"} type="password" minLength={setupRequired || changing ? 6 : undefined} autoComplete={setupRequired || changing ? "new-password" : "current-password"} autoFocus={setupRequired} required /></label>
             {setupRequired && <label>确认密码<input name="password_confirmation" type="password" minLength={6} autoComplete="new-password" required /></label>}
             {error && <div className="form-error">{error}</div>}
-            <button className="primary-button" disabled={busy}>{busy ? "请稍候" : setupRequired ? "设置并进入系统" : changing ? "更新并重新登录" : "登录"}<ArrowRight size={16} /></button>
+            <button className="primary-button" disabled={busy}>{busy ? "请稍候" : setupRequired ? "设置并进入系统" : changing ? "更新并进入系统" : "登录"}<ArrowRight size={16} /></button>
           </form>
         </section>
       </section>

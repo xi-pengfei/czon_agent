@@ -215,6 +215,7 @@ class AuthTests(unittest.TestCase):
         self.store.create_user("new_admin", "InitialPassword123", "administrator", must_change=True)
         client = TestClient(self.client.app)
         login = client.post("/api/auth/login", json={"username": "new_admin", "password": "InitialPassword123"})
+        old_token = login.cookies.get("czon_agent_session")
         csrf = login.json()["csrf_token"]
         self.assertEqual(client.get("/api/sessions").status_code, 403)
         self.assertEqual(client.get("/download/result.txt").status_code, 403)
@@ -224,7 +225,10 @@ class AuthTests(unittest.TestCase):
             json={"old_password": "InitialPassword123", "new_password": "ChangedPassword456"},
         )
         self.assertEqual(changed.status_code, 200)
-        self.assertEqual(client.get("/api/me").status_code, 401)
+        self.assertFalse(changed.json()["must_change_password"])
+        self.assertNotEqual(changed.cookies.get("czon_agent_session"), old_token)
+        self.assertEqual(client.get("/api/me").status_code, 200)
+        self.assertIsNone(self.store.get_session(old_token))
 
     def test_six_character_password_without_composition_rules_is_allowed(self):
         csrf = self.login().json()["csrf_token"]

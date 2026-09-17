@@ -837,8 +837,18 @@ def create_app(
             raise HTTPException(status_code=422, detail="新密码至少 6 位")
         if not auth_store.change_password(identity["username"], req.old_password, req.new_password):
             raise HTTPException(status_code=400, detail="原密码错误")
-        response = JSONResponse({"ok": True})
-        response.delete_cookie(AUTH_COOKIE, path="/")
+        token, csrf = auth_store.create_session(identity["username"])
+        access = auth_store.get_access(identity["username"]) or {}
+        response = JSONResponse({
+            "username": identity["username"], "role": identity["role"],
+            "is_admin": bool(access.get("is_admin")),
+            "manage_skills": bool(access.get("is_admin") or access.get("manage_skills")),
+            "must_change_password": False, "csrf_token": csrf,
+        })
+        response.set_cookie(
+            AUTH_COOKIE, token, httponly=True, secure=cookie_secure,
+            samesite="strict", path="/",
+        )
         return response
 
     @app.get("/api/admin/users")
