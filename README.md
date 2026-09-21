@@ -1,3 +1,5 @@
+
+
 # czon_agent
 
 面向企业内部使用的精简 Python AI 智能体。应用自身提供登录、角色权限、历史会话、模型管理、Skills、工具策略、附件、实时输出和主动停止；WebUI 使用 React、TypeScript 和 Vite，生产运行仍只有 Python/FastAPI 服务。
@@ -33,7 +35,7 @@ python main.py "帮我列出 workspace 下的文件"
 
 `config.yaml` 只保留机器和运行时配置：
 
-- `active_provider`：CLI 默认模型。
+- `active_provider`：CLI 默认模型，可用 `CZON_ACTIVE_PROVIDER` 覆盖。
 - `skills`、`workspace`：目录和全局 Skill 开关。
 - `agent`：总运行时间、连续异常、模型连接/读取/写入超时和有限重试。
 - `tool_policy`：底层工具安全策略。
