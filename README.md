@@ -88,7 +88,7 @@ czon_agent/
 └── main.py
 ```
 
-向量库、Qdrant、embedding、演示数据库和演示 Skills 已从系统移除。
+
 
 ## 验证
 
