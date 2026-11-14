@@ -1,3 +1,4 @@
+import { t } from "../../i18n";
 import { useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 
@@ -5,7 +6,7 @@ export function PageHeader({ title, description, action }: { title: string; desc
   return <header className="page-header"><div><h1>{title}</h1><p>{description}</p></div>{action}</header>;
 }
 
-export function SearchBox({ value, onChange, placeholder = "搜索" }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
+export function SearchBox({ value, onChange, placeholder = t("搜索") }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
   return <label className="search-box"><Search size={15} /><input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
 }
 
@@ -29,13 +30,13 @@ export function MultiSelect({ label, options, value, onChange }: {
     onChange(next.length === options.length ? "*" : next);
   };
   return <label className="multi-field">{label}<details className="multi-select">
-    <summary>{value === "*" ? "全部" : selected.length ? `已选择 ${selected.length} 项` : "请选择"}</summary>
+    <summary>{value === "*" ? t("全部") : selected.length ? t("已选择 {{value0}} 项", { value0: selected.length }) : t("请选择")}</summary>
     <div className="multi-menu">
-      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" />
-      <label><input type="checkbox" checked={value === "*"} onChange={(event) => onChange(event.target.checked ? "*" : [])} />全部</label>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索")} />
+      <label><input type="checkbox" checked={value === "*"} onChange={(event) => onChange(event.target.checked ? "*" : [])} />{t("全部")}</label>
       {visible.map((item) => <label key={item.value}><input type="checkbox" checked={selected.includes(item.value)} onChange={() => toggle(item.value)} /><span>{item.label}</span></label>)}
     </div>
   </details></label>;
 }
 
-export function formatList(value: "*" | string[]) { return value === "*" ? "全部" : value.join(", "); }
+export function formatList(value: "*" | string[]) { return value === "*" ? t("全部") : value.join(", "); }

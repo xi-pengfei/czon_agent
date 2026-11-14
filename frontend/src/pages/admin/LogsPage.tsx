@@ -1,3 +1,4 @@
+import { t } from "../../i18n";
 import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api, formatTime } from "../../api";
@@ -22,10 +23,10 @@ export function LogsPage() {
   const logs = useMemo(() => runtime.filter((item) => `${item.level} ${item.message}`.toLowerCase().includes(search.toLowerCase())), [runtime, search]);
 
   return <main className="admin-content">
-    <PageHeader title="日志中心" description="查看管理员操作和系统运行状态" action={<button className="secondary-button compact" disabled={loading} onClick={load}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新</button>} />
-    <div className="subnav"><button className={view === "audit" ? "is-active" : ""} onClick={() => setView("audit")}>操作审计</button><button className={view === "runtime" ? "is-active" : ""} onClick={() => setView("runtime")}>运行日志</button></div>
-    <div className="table-toolbar"><SearchBox value={search} onChange={setSearch} placeholder="筛选日志" /><span>{view === "audit" ? audits.length : logs.length} 条记录</span></div>
-    {view === "audit" ? <div className="data-table"><table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th></tr></thead><tbody>{audits.map((item, index) => <tr key={`${item.created_at}-${index}`}><td>{formatTime(item.created_at)}</td><td>{item.actor}</td><td><code>{item.action}</code></td><td>{item.target}</td></tr>)}</tbody></table>{!audits.length && <EmptyTable text="暂无审计记录" />}</div>
-      : <div className="data-table log-table"><table><thead><tr><th>时间</th><th>级别</th><th>内容</th></tr></thead><tbody>{logs.map((item, index) => <tr key={`${item.timestamp}-${index}`}><td>{item.timestamp}</td><td><span className={`log-level ${item.level.toLowerCase()}`}>{item.level}</span></td><td className="log-message">{item.message}</td></tr>)}</tbody></table>{!logs.length && <EmptyTable text="暂无运行日志" />}</div>}
+    <PageHeader title={t("日志中心")} description={t("查看管理员操作和系统运行状态")} action={<button className="secondary-button compact" disabled={loading} onClick={load}><RefreshCw className={loading ? "spin" : ""} size={15} />{t("刷新")}</button>} />
+    <div className="subnav"><button className={view === "audit" ? "is-active" : ""} onClick={() => setView("audit")}>{t("操作审计")}</button><button className={view === "runtime" ? "is-active" : ""} onClick={() => setView("runtime")}>{t("运行日志")}</button></div>
+    <div className="table-toolbar"><SearchBox value={search} onChange={setSearch} placeholder={t("筛选日志")} /><span>{view === "audit" ? audits.length : logs.length}  {t("条记录")}</span></div>
+    {view === "audit" ? <div className="data-table"><table><thead><tr><th>{t("时间")}</th><th>{t("操作者")}</th><th>{t("动作")}</th><th>{t("对象")}</th></tr></thead><tbody>{audits.map((item, index) => <tr key={`${item.created_at}-${index}`}><td>{formatTime(item.created_at)}</td><td>{item.actor}</td><td><code>{item.action}</code></td><td>{item.target}</td></tr>)}</tbody></table>{!audits.length && <EmptyTable text={t("暂无审计记录")} />}</div>
+      : <div className="data-table log-table"><table><thead><tr><th>{t("时间")}</th><th>{t("级别")}</th><th>{t("内容")}</th></tr></thead><tbody>{logs.map((item, index) => <tr key={`${item.timestamp}-${index}`}><td>{item.timestamp}</td><td><span className={`log-level ${item.level.toLowerCase()}`}>{item.level}</span></td><td className="log-message">{item.message}</td></tr>)}</tbody></table>{!logs.length && <EmptyTable text={t("暂无运行日志")} />}</div>}
   </main>;
 }

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { isActive, type Run } from "../hooks/useRuns";
@@ -40,5 +41,5 @@ export function WaitingHint({ run }: { run?: Run; narrated?: boolean }) {
 
 function ActivityText({ text }: { text: string }) {
   const visible = useLiveText(text, true);
-  return <div className="activity-summary" aria-label="当前核对进度">{visible}</div>;
+  return <div className="activity-summary" aria-label={t("当前核对进度")}>{visible}</div>;
 }

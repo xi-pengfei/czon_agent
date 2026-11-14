@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useEffect, useRef, useState } from 'react';
 import { api, apiResponse } from '../api';
 import type { Run } from './useRuns';
@@ -30,29 +31,29 @@ export function useNarration(run: Run | undefined, enabled: boolean, onError: (t
   const prepare = async (text: string, signal: AbortSignal): Promise<PreparedSpeech> => {
       if (serverTts.current === undefined) serverTts.current = (await api<{tts:boolean}>('/api/speech/capabilities', {signal})).tts;
       if (!serverTts.current) {
-        if (!('speechSynthesis' in window)) throw new Error('此设备没有可用的播报声音，请配置语音合成服务');
+        if (!('speechSynthesis' in window)) throw new Error(t("此设备没有可用的播报声音，请配置语音合成服务"));
         return {play: abortSignal => new Promise<void>((resolve, reject) => {
           if (abortSignal.aborted) { resolve(); return; }
           const utterance = new SpeechSynthesisUtterance(text); utterance.lang = 'zh-CN';
           const finish = (error?: Error) => { setPlaying(false); abortSignal.removeEventListener('abort', cancel); error ? reject(error) : resolve(); };
           const cancel = () => { window.speechSynthesis.cancel(); finish(); };
           abortSignal.addEventListener('abort', cancel, {once:true});
-          utterance.onend = () => finish(); utterance.onerror = () => finish(abortSignal.aborted ? undefined : new Error('设备语音播放失败'));
+          utterance.onend = () => finish(); utterance.onerror = () => finish(abortSignal.aborted ? undefined : new Error(t("设备语音播放失败")));
           setPlaying(true); window.speechSynthesis.speak(utterance);
         })};
       }
       const response = await apiResponse('/api/speech/tts', {method:'POST', body:JSON.stringify({text}), signal});
-      if (!response.ok) throw new Error('语音合成暂不可用，文字和任务不受影响');
+      if (!response.ok) throw new Error(t("语音合成暂不可用，文字和任务不受影响"));
       const bytes = await response.arrayBuffer();
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
       const audioContext = context.current;
-      if (!audioContext) throw new Error('请重新点击开启播报，以启用设备音频');
+      if (!audioContext) throw new Error(t("请重新点击开启播报，以启用设备音频"));
       const buffer = await audioContext.decodeAudioData(bytes);
       return {play: async abortSignal => {
         await resumeAudio(audioContext);
         return new Promise<void>((resolve, reject) => {
         if (abortSignal.aborted) { resolve(); return; }
-        if (audioContext.state !== 'running') { reject(new Error('设备暂停了音频，请重新点击开启播报')); return; }
+        if (audioContext.state !== 'running') { reject(new Error(t("设备暂停了音频，请重新点击开启播报"))); return; }
         const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioContext.destination);
         const finish = () => { setPlaying(false); abortSignal.removeEventListener('abort', cancel); source.disconnect(); resolve(); };
         const cancel = () => { source.stop(); finish(); };
@@ -65,7 +66,7 @@ export function useNarration(run: Run | undefined, enabled: boolean, onError: (t
     const controller = new AbortController(); previewController.current = controller;
     try {
       await unlock();
-      const speech = await prepare('播报已开启，你可以在这台设备上听取任务进度和结果。', controller.signal);
+      const speech = await prepare(t("播报已开启，你可以在这台设备上听取任务进度和结果。"), controller.signal);
       await speech.play(controller.signal);
     } catch (error) { if (!controller.signal.aborted) callbacks.current.onError((error as Error).message); }
   }
@@ -95,8 +96,8 @@ async function resumeAudio(context: AudioContext) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([context.resume(), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('声音被浏览器暂停，请点击“恢复声音”或重新开启播报；也可在 Safari 中打开此页面。')), 3000);
+      timer = setTimeout(() => reject(new Error(t("声音被浏览器暂停，请点击“恢复声音”或重新开启播报；也可在 Safari 中打开此页面。"))), 3000);
     })]);
-    if ((context.state as string) !== 'running') throw new Error('声音尚未恢复，请再次点击开启播报');
+    if ((context.state as string) !== 'running') throw new Error(t("声音尚未恢复，请再次点击开启播报"));
   } finally { clearTimeout(timer); }
 }

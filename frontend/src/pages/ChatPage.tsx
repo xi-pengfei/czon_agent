@@ -1,3 +1,6 @@
+import { LanguagePicker } from "../components/LanguagePicker";
+import { useTranslation } from "react-i18next";
+import { t } from "../i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, PanelLeftOpen, Settings, Plus, Monitor, Volume2, VolumeX } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -14,6 +17,7 @@ type Props = { identity: Identity; onLogout: () => void; display?: boolean };
 type HistoryMessage = ChatMessage & { run_id?: string; duration_ms?: number; input_tokens?: number; output_tokens?: number };
 
 export function ChatPage({ identity, onLogout, display = false }: Props) {
+  const { i18n } = useTranslation();
   const storageKey = `czon_agent_session_id:${identity.username}`;
   const [sessionId, setSessionId] = useState(() => sessionStorage.getItem(storageKey) || randomId());
   const currentSession = useRef(sessionId); currentSession.current = sessionId;
@@ -51,7 +55,7 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
   const rememberSession = useCallback((id: string) => {
     setSessionId(id); sessionStorage.setItem(storageKey, id);
   }, [storageKey]);
-  useEffect(() => { document.title = display ? "任务大屏 · czon Agent" : "工作台 · czon Agent"; }, [display]);
+  useEffect(() => { document.title = display ? t("任务大屏 · czon Agent") : t("工作台 · czon Agent"); }, [display, i18n.resolvedLanguage]);
   useEffect(() => {
     const viewport = window.visualViewport;
     const resize = () => {
@@ -67,7 +71,7 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
     const data = await api<{ sessions: Session[] }>("/api/sessions", { cache: "no-store" });
     setSessions(data.sessions);
   }, []);
-  useEffect(() => { void loadSessions().catch(() => setNotice("会话列表暂时无法更新")); }, [loadSessions, revision]);
+  useEffect(() => { void loadSessions().catch(() => setNotice(t("会话列表暂时无法更新"))); }, [loadSessions, revision]);
   useEffect(() => {
     let cancelled = false;
     setHistory([]); setHistoryRuns([]);
@@ -115,7 +119,7 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
   function openSession(id: string) { rememberSession(id); setAttachments([]); setDirectory(null); if (window.innerWidth <= 760) setSidebarOpen(false); }
   function newChat() { openSession(randomId()); }
   async function deleteSession(id: string) {
-    if (!window.confirm("确定删除这个会话吗？")) return;
+    if (!window.confirm(t("确定删除这个会话吗？"))) return;
     try { await api(`/api/sessions/${id}`, { method: "DELETE" }); if (id === sessionId) newChat(); await loadSessions(); }
     catch (error) { setNotice((error as Error).message); }
   }
@@ -139,7 +143,7 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
       requests.current.delete(request.session_id);
       if (currentSession.current === request.session_id) { setAttachments([]); setDirectory(null); }
       void loadSessions(); return true;
-    } catch (error) { setNotice(`提交未确认，请先查看任务列表，避免重复执行业务。${(error as Error).message}`); return false; }
+    } catch (error) { setNotice(t("提交未确认，请先查看任务列表，避免重复执行业务。{{value0}}", { value0: (error as Error).message })); return false; }
     finally { setSubmitting(false); }
   }
   async function stopRun() {
@@ -158,7 +162,7 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
   async function toggleNarration() {
     if (speaking) { setSpeaking(false); return; }
     try { await narration.unlock(); setSpeaking(true); }
-    catch { setNotice("设备未能开启声音，请再点击一次播报按钮"); }
+    catch { setNotice(t("设备未能开启声音，请再点击一次播报按钮")); }
   }
 
   return (
@@ -166,23 +170,24 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
       {!display && <Sidebar identity={identity} sessions={sessions} runningIds={activeSessions} activeId={sessionId} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNew={newChat} onOpen={openSession} onDelete={deleteSession} onLogout={logout} />}
       <section className="chat-workspace">
         <header className="chat-header">
-          {!display && <button className="icon-button" aria-label="切换会话侧栏" title={sidebarOpen ? "收起侧栏" : "打开侧栏"} onClick={() => setSidebarOpen(!sidebarOpen)}>{sidebarOpen ? <Menu size={18} /> : <PanelLeftOpen size={18} />}</button>}
+          {!display && <button className="icon-button" aria-label={t("切换会话侧栏")} title={sidebarOpen ? t("收起侧栏") : t("打开侧栏")} onClick={() => setSidebarOpen(!sidebarOpen)}>{sidebarOpen ? <Menu size={18} /> : <PanelLeftOpen size={18} />}</button>}
           <div className="header-copy">
             <div className="header-title">
-              <strong className="workspace-title">{display ? "任务大屏" : "AI智能体"}</strong>
-              {(!connected || running) && <span className={`header-status ${running ? "is-running" : ""}`}>{!connected ? "正在重连" : `执行中 · ${formatElapsed(elapsedSeconds)}`}</span>}
+              <strong className="workspace-title">{display ? t("任务大屏") : t("AI智能体")}</strong>
+              {(!connected || running) && <span className={`header-status ${running ? "is-running" : ""}`}>{!connected ? t("正在重连") : t("执行中 · {{value0}}", { value0: formatElapsed(elapsedSeconds) })}</span>}
             </div>
           </div>
           <div className="header-actions">
-            {!display && <button className="icon-button" aria-label="新任务" title="新任务" onClick={newChat}><Plus size={20} /></button>}
-            <Link className="icon-button display-link" to={display ? "/" : "/display"} aria-label={display ? "返回工作台" : "打开大屏模式"} title={display ? "返回工作台" : "大屏模式"}><Monitor size={19} /></Link>
-            <button className={`icon-button narration-toggle ${speaking ? "is-active" : ""}`} title={speaking ? "关闭本机播报" : "开启本机播报"} aria-label={speaking ? "关闭本机播报" : "开启本机播报"} onClick={() => void toggleNarration()} aria-pressed={speaking}>{speaking ? <Volume2 size={19} /> : <VolumeX size={19} />}</button>
+            {!display && <button className="icon-button" aria-label={t("新任务")} title={t("新任务")} onClick={newChat}><Plus size={20} /></button>}
+            <Link className="icon-button display-link" to={display ? "/" : "/display"} aria-label={display ? t("返回工作台") : t("打开大屏模式")} title={display ? t("返回工作台") : t("大屏模式")}><Monitor size={19} /></Link>
+            <button className={`icon-button narration-toggle ${speaking ? "is-active" : ""}`} title={speaking ? t("关闭本机播报") : t("开启本机播报")} aria-label={speaking ? t("关闭本机播报") : t("开启本机播报")} onClick={() => void toggleNarration()} aria-pressed={speaking}>{speaking ? <Volume2 size={19} /> : <VolumeX size={19} />}</button>
+            <LanguagePicker />
           </div>
         </header>
         <MessageList key={`messages-${sessionId}`} messages={messages} userName={identity.username} scrollRequest={scrollRequest} waitingRun={active} narrated={speaking} onConfirm={confirmTool} runElapsedSeconds={running ? elapsedSeconds : undefined} />
         {!providers.some((item) => item.configured) && <div className="no-model-banner">
-          <span>{identity.is_admin ? "尚未配置模型，完成配置后即可开始对话。" : "系统尚未配置模型，请联系管理员。"}</span>
-          {identity.is_admin && <a href="/admin/models"><Settings size={14} />配置模型</a>}
+          <span>{identity.is_admin ? t("尚未配置模型，完成配置后即可开始对话。") : t("系统尚未配置模型，请联系管理员。")}</span>
+          {identity.is_admin && <a href="/admin/models"><Settings size={14} />{t("配置模型")}</a>}
         </div>}
         {!display && <Composer key={`composer-${sessionId}`} providers={providers} provider={provider} onProvider={chooseProvider} skills={skills} attachments={attachments} onAttachments={setAttachments} directory={directory} onDirectory={setDirectory} running={running} onSend={sendMessage} onStop={stopRun} onNotice={setNotice} />}
       </section>
@@ -192,6 +197,6 @@ export function ChatPage({ identity, onLogout, display = false }: Props) {
 }
 
 function formatElapsed(seconds: number) {
-  if (seconds < 60) return `${seconds} 秒`;
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  if (seconds < 60) return t("{{value0}} 秒", { value0: seconds });
+  return t("{{value0}} 分 {{value1}} 秒", { value0: Math.floor(seconds / 60), value1: seconds % 60 });
 }

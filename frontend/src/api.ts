@@ -1,3 +1,4 @@
+import i18n, { t } from "./i18n";
 let csrfToken = "";
 export const AUTH_EXPIRED_EVENT = "czon:auth-expired";
 
@@ -21,7 +22,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   const response = await fetch(url, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   handleUnauthorized(response.status, url);
-  if (!response.ok) throw new Error(data.detail || `请求失败 (${response.status})`);
+  if (!response.ok) throw new Error((data.detail ? t(data.detail) : "") || t("请求失败 ({{value0}})", { value0: response.status }));
   return data as T;
 }
 
@@ -54,9 +55,9 @@ export function uploadFile(file: File, onProgress: (percent: number) => void): P
       }
       handleUnauthorized(request.status, "/api/upload");
       if (request.status >= 200 && request.status < 300) resolve(data);
-      else reject(new Error(data.detail || "上传失败"));
+      else reject(new Error((data.detail ? t(data.detail) : "") || "上传失败"));
     };
-    request.onerror = () => reject(new Error("上传连接失败"));
+    request.onerror = () => reject(new Error(t("上传连接失败")));
     const body = new FormData();
     body.append("file", file);
     request.send(body);
@@ -82,7 +83,7 @@ export function parseSseEvent(chunk: string): { name: string; data: Record<strin
 
 export function formatTime(value?: string) {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(i18n.resolvedLanguage || "zh-CN", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
   }).format(new Date(value));
 }

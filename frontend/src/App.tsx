@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, AUTH_EXPIRED_EVENT, setCsrfToken } from "./api";
@@ -13,6 +14,7 @@ import { SkillsPage } from "./pages/admin/SkillsPage";
 import type { Identity } from "./types";
 
 export default function App() {
+  useTranslation(); // Re-render UI labels without remounting chats or audio.
   const location = useLocation();
   const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
   const [setupRequired, setSetupRequired] = useState<boolean | undefined>(undefined);

@@ -599,7 +599,7 @@ kbd { padding: 1px 5px; color: var(--ink); background: var(--surface-soft); bord
 .sidebar .new-task-card svg { flex-shrink:0; }
 /* Native accessible model selection with one clean chevron; microphone stays unboxed. */
 .model-picker { position:relative; display:inline-flex; align-items:center; min-width:0; max-width:230px; border-radius:9px; background:#f5f6f8; }
-.composer-left .model-picker select { appearance:none; -webkit-appearance:none; height:38px; min-height:38px; width:100%; max-width:100%; padding:0 32px 0 12px; background:transparent; border:0; border-radius:9px; font-size:14px; color:#596474; cursor:pointer; }
+.composer-left .model-picker select, .language-picker select { appearance:none; -webkit-appearance:none; height:38px; min-height:38px; width:100%; max-width:100%; padding:0 32px 0 12px; background:transparent; border:0; border-radius:9px; font-size:14px; color:#596474; cursor:pointer; }
 .model-picker > svg { position:absolute; right:10px; pointer-events:none; color:#697483; }
 .model-picker:hover { background:#eef0f3; }
 .composer-shell .voice-button,.composer-shell .voice-button:active { color:#252a30; background:transparent; border:0; border-radius:50%; box-shadow:none; transform:none; }
@@ -691,3 +691,18 @@ button.assistant-glyph { padding:0; border:0; background:transparent; cursor:poi
 .user-message-name { color:var(--muted); font-size:12px; line-height:1.4; padding-right:8px; }
 .user-content { padding:12px 20px; color:var(--ink); background:#f2f2f2; border:0; border-radius:26px 26px 0 26px; }
 @media(max-width:760px) { .user-content { padding:11px 17px; border-radius:24px 24px 0 24px; } }
+
+/* Language picker reuses the model picker's native select and chevron. */
+.language-picker, .language-picker:hover { background:transparent; }
+.language-picker select { color:var(--ink); padding-left:6px; font-size:14px; width:auto; max-width:140px; }
+.language-picker select:focus { outline:0; box-shadow:none; }
+.language-picker select:focus-visible:not([data-pointer-focus]) { text-decoration:underline; text-underline-offset:5px; }
+.auth-card > .language-picker { align-self:flex-end; margin-bottom:16px; }
+.admin-topbar .language-picker { margin-left:auto; margin-right:16px; }
+html[lang="en"] .welcome-intro h1 { text-wrap:balance; }
+@media (pointer:coarse) { .language-picker select { min-height:44px; } }
+@media (max-width:600px) {
+  .chat-header .language-picker select { max-width:105px; padding-left:4px; }
+  .admin-topbar .language-picker { margin-right:8px; }
+}
+@media (forced-colors:active) { .language-picker select:focus-visible { outline:1px solid Highlight; } }

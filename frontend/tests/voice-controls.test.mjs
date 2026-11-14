@@ -1,3 +1,4 @@
+import { translations } from './i18n-helper.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -16,7 +17,7 @@ function harness() {
  const api=async(path)=>path.endsWith('capabilities')?{asr:true}:await new Promise(resolve=>{resolveAsr=resolve;});
  const exports={};
  const source=ts.transpileModule(readFileSync(new URL('../src/components/VoiceInput.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
- vm.runInNewContext(source,{exports,require:name=>name==='react'?hooks:name==='../api'?{api}:name==='../audio/segments'?{SpeechSegments:Segments}:require(name),window:{isSecureContext:true,AudioContext:Context,AudioWorkletNode:Node},AudioContext:Context,AudioWorkletNode:Node,navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[]})}},setTimeout,clearTimeout,AbortController,FormData,Float32Array,queueMicrotask});
+ vm.runInNewContext(source,{exports,require:name=>name==='../i18n'?translations:name==='react'?hooks:name==='../api'?{api}:name==='../audio/segments'?{SpeechSegments:Segments}:require(name),window:{isSecureContext:true,AudioContext:Context,AudioWorkletNode:Node},AudioContext:Context,AudioWorkletNode:Node,navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[]})}},setTimeout,clearTimeout,AbortController,FormData,Float32Array,queueMicrotask});
  const props={onText:t=>events.text.push(t),onSubmit:t=>events.sent.push(t),onCancel:()=>events.cancel++,onBusy:b=>events.busy.push(b),onStatus(){},onNotice(){}};
  const render=()=>{cursor=0;return exports.VoiceInput(props);};
  const find=(tree,label)=>{if(!tree)return null;if(Array.isArray(tree))return tree.map(t=>find(t,label)).find(Boolean);if(tree.props?.['aria-label']===label)return tree;return find(tree.props?.children,label);};

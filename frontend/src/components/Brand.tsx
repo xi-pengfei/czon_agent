@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 type BrandProps = { compact?: boolean };
 
 export function Brand({ compact = false }: BrandProps) {
@@ -7,7 +8,7 @@ export function Brand({ compact = false }: BrandProps) {
       href="http://czon.cn"
       target="_blank"
       rel="noreferrer noopener"
-      title="访问 czon.cn"
+      title={t("访问 czon.cn")}
     >
       czon<span>.cn</span>
     </a>
