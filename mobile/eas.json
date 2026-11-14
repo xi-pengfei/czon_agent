@@ -1,0 +1,8 @@
+{
+  "cli": {"version": ">= 16.0.0"},
+  "build": {
+    "development": {"developmentClient": true, "distribution": "internal", "env": {"CZON_MOBILE_LAN": "1"}},
+    "simulator": {"developmentClient": true, "distribution": "internal", "ios": {"simulator": true}, "env": {"CZON_MOBILE_LAN": "1"}},
+    "production": {"autoIncrement": true}
+  }
+}

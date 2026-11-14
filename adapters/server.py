@@ -60,6 +60,16 @@ UPLOAD_RETENTION_SECONDS = 24 * 60 * 60
 SSE_KEEPALIVE_SECONDS = 10
 AUTH_COOKIE = "czon_agent_session"
 
+
+def _session_token(request: Request) -> str:
+    """Native clients use the same revocable sessions and CSRF checks as WebUI."""
+    authorization = request.headers.get("Authorization", "")
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        return token if scheme.lower() == "bearer" else ""
+    return request.cookies.get(AUTH_COOKIE, "")
+
+
 def _model_error_detail(exc: Exception) -> tuple[str, str] | None:
     if isinstance(exc, openai.APITimeoutError):
         return "model_timeout", "模型服务响应超时，请稍后重试或切换模型"
@@ -523,10 +533,10 @@ def create_app(
     async def security_headers(request: Request, call_next):
         identity = None
         response = None
-        public_api_paths = {"/api/auth/login", "/api/setup/status", "/api/setup/admin"}
+        public_api_paths = {"/api/auth/mobile/login", "/api/auth/login", "/api/setup/status", "/api/setup/admin"}
         protected_path = request.url.path.startswith(("/api/", "/download/"))
         if protected_path and request.url.path not in public_api_paths:
-            identity = await asyncio.to_thread(auth_store.get_session, request.cookies.get(AUTH_COOKIE, ""))
+            identity = await asyncio.to_thread(auth_store.get_session, _session_token(request))
             allowed_during_change = {"/api/me", "/api/auth/change-password", "/api/auth/logout"}
             if identity and identity["must_change_password"] and request.url.path not in allowed_during_change:
                 response = JSONResponse(status_code=403, content={"detail": "请先修改初始密码"})
@@ -543,6 +553,8 @@ def create_app(
                         )
         if response is None:
             response = await call_next(request)
+        if request.url.path.startswith("/api/auth/"):
+            response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers.setdefault("Content-Security-Policy", (
@@ -575,7 +587,7 @@ def create_app(
             speech_request_id.reset(token)
 
     def current_identity(request: Request) -> dict:
-        identity = auth_store.get_session(request.cookies.get(AUTH_COOKIE, ""))
+        identity = auth_store.get_session(_session_token(request))
         if identity is None:
             raise HTTPException(status_code=401, detail="请先登录")
         return identity
@@ -848,6 +860,7 @@ def create_app(
         )
         return response
 
+    @app.post("/api/auth/mobile/login")
     @app.post("/api/auth/login")
     def login(req: LoginRequest, request: Request):
         key = request.client.host if request.client else "unknown"
@@ -866,6 +879,7 @@ def create_app(
         auth_store.record_audit(user["username"], "login", key)
         access = auth_store.get_access(user["username"]) or {}
         response = JSONResponse({
+            **({"session_token": token} if request.url.path == "/api/auth/mobile/login" else {}),
             "username": user["username"], "role": user["role"],
             "is_admin": bool(access.get("is_admin")),
             "manage_skills": bool(access.get("is_admin") or access.get("manage_skills")),
@@ -880,7 +894,7 @@ def create_app(
     @app.post("/api/auth/logout")
     def logout(request: Request):
         username = current_user(request)
-        auth_store.delete_session(request.cookies.get(AUTH_COOKIE, ""))
+        auth_store.delete_session(_session_token(request))
         auth_store.record_audit(username, "logout", username)
         response = JSONResponse({"ok": True})
         response.delete_cookie(AUTH_COOKIE, path="/")
@@ -896,6 +910,7 @@ def create_app(
         token, csrf = auth_store.create_session(identity["username"])
         access = auth_store.get_access(identity["username"]) or {}
         response = JSONResponse({
+            **({"session_token": token} if request.headers.get("Authorization") else {}),
             "username": identity["username"], "role": identity["role"],
             "is_admin": bool(access.get("is_admin")),
             "manage_skills": bool(access.get("is_admin") or access.get("manage_skills")),
@@ -1408,7 +1423,7 @@ def create_app(
         while not await request.is_disconnected():
             # Recheck login/disable/revocation during long-lived subscriptions.
             if time.monotonic() - last_auth_at >= 15:
-                identity = await asyncio.to_thread(auth_store.get_session, request.cookies.get(AUTH_COOKIE, ""))
+                identity = await asyncio.to_thread(auth_store.get_session, _session_token(request))
                 if not identity or identity["must_change_password"]:
                     yield _sse("auth_expired", {})
                     return

@@ -1,0 +1,49 @@
+{
+  "name": "czon-agent-mobile",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~58.0.25",
+    "expo-status-bar": "~58.0.5",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "expo-audio": "~58.0.12",
+    "expo-secure-store": "~58.0.3",
+    "expo-file-system": "~58.0.13",
+    "expo-document-picker": "~58.0.5",
+    "expo-sharing": "~58.0.23",
+    "expo-crypto": "~58.0.8",
+    "react-native-safe-area-context": "~5.11.1",
+    "@expo/vector-icons": "^15.0.2",
+    "expo-dev-client": "~58.0.20",
+    "react-native-markdown-display": "^7.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~58.0.4",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs",
+    "export:ios": "expo export --platform ios",
+    "lint": "expo lint"
+  },
+  "private": true,
+  "overrides": {
+    "react-native-markdown-display": {
+      "markdown-it": "14.3.3"
+    },
+    "linkify-it": "5.0.2",
+    "@expo/fingerprint": {
+      "minimatch": "11.0.8"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.8"
+    }
+  }
+}
