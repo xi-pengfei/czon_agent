@@ -65,9 +65,14 @@ export default function App() {
     return <Navigate to="/admin/models" replace />;
   }
 
+  // These are two views of one workspace. Keep its audio context, playback
+  // queue and session mounted when navigating between them.
+  if (location.pathname === "/" || location.pathname === "/display") {
+    return <ChatPage key={identity.username} identity={identity} onLogout={() => setIdentity(null)} display={location.pathname === "/display"} />;
+  }
+
   return (
     <Routes>
-      <Route path="/" element={<ChatPage identity={identity} onLogout={() => setIdentity(null)} />} />
       {(identity.is_admin || identity.manage_skills) && (
         <Route path="/admin" element={<AdminLayout identity={identity} />}>
           <Route index element={<Navigate to={identity.is_admin ? "users" : "skills"} replace />} />

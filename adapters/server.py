@@ -1,13 +1,13 @@
 """FastAPI service for the WebUI and HTTP API."""
 import asyncio
 from collections import deque
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import ipaddress
 import json
 import logging
 import mimetypes
-import queue
 import re
 import shutil
 import threading
@@ -15,18 +15,22 @@ import uuid
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
 import openai
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.agent import AgentStopped, AgentTimeout
 from core.session_store import SessionStore
+from core.runs import RunManager, TERMINAL
+from core.speech import SpeechService, speech_request_id
+from core.narration import NarrationService
 from core.skills import (
     MAX_SKILL_ARCHIVE_BYTES,
     SkillArchiveError,
@@ -172,6 +176,17 @@ class StreamChatRequest(ChatRequest):
     run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+class SpeechRequest(StrictModel):
+    text: str = Field(min_length=1, max_length=600)
+
+
+class NarrationRequest(StrictModel):
+    kind: Literal["progress", "answer", "activity"] = "answer"
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    anchor: str = Field(default="", max_length=80)
+    previous: str = Field(default="", max_length=400)
+
+
 class ConfirmRequest(StrictModel):
     confirmation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
@@ -184,8 +199,11 @@ class StopRequest(SessionRequest):
     run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+USERNAME_PATTERN = r"^[A-Za-z0-9_.@\-\p{Han}]+$"
+
+
 class LoginRequest(StrictModel):
-    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.@-]+$")
+    username: str = Field(min_length=1, max_length=64, pattern=USERNAME_PATTERN)
     password: str = Field(min_length=1, max_length=256)
 
 
@@ -200,7 +218,7 @@ class ChangePasswordRequest(StrictModel):
 
 
 class AdminUserCreate(StrictModel):
-    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.@-]+$")
+    username: str = Field(min_length=1, max_length=64, pattern=USERNAME_PATTERN)
     password: str = Field(min_length=6, max_length=256)
     role: str = Field(min_length=1, max_length=64)
     department_id: str | None = Field(default="root", max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
@@ -298,6 +316,8 @@ def _admin_validation_detail(exc: RequestValidationError) -> str:
     }
     label = labels.get(field, field)
     error_type = str(error.get("type") or "")
+    if field == "username" and error_type in {"string_pattern_mismatch", "string_too_short", "string_too_long"}:
+        return "用户名须为 1–64 个字符，可使用中文、英文字母、数字及 _ . @ -，不能包含空格或斜杠"
     if error_type == "extra_forbidden":
         return f"{label}是只读字段，不应提交"
     if error_type == "missing":
@@ -447,6 +467,9 @@ def create_app(
     skills_dir: str = "./skills",
     skill_catalog_provider=None,
     provider_catalog_provider=None,
+    run_options=None,
+    speech_options=None,
+    narration_writer=None,
 ):
     root = Path(project_root or Path.cwd()).resolve()
     webui_dir = root / "webui"
@@ -476,11 +499,18 @@ def create_app(
     session_store = SessionStore(db_path.resolve())
     artifact_root = db_path.resolve().parent / "artifacts"
     artifact_root.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="czon Agent", version="0.2.0", docs_url=None, redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        await asyncio.to_thread(runs.close)
+
+    app = FastAPI(title="czon Agent", version="0.2.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+    runs = RunManager(db_path.resolve(), **(run_options or {}))
+    app.state.runs = runs
+    speech = SpeechService(db_path.resolve().parent / "speech", speech_options)
+    narration = NarrationService(narration_writer)
     pending_confirmations: dict[str, dict] = {}
     pending_lock = threading.Lock()
-    active_runs: dict[str, dict] = {}
-    active_runs_lock = threading.Lock()
     login_attempts: dict[str, list[float]] = {}
 
     @app.exception_handler(RequestValidationError)
@@ -496,7 +526,7 @@ def create_app(
         public_api_paths = {"/api/auth/login", "/api/setup/status", "/api/setup/admin"}
         protected_path = request.url.path.startswith(("/api/", "/download/"))
         if protected_path and request.url.path not in public_api_paths:
-            identity = auth_store.get_session(request.cookies.get(AUTH_COOKIE, ""))
+            identity = await asyncio.to_thread(auth_store.get_session, request.cookies.get(AUTH_COOKIE, ""))
             allowed_during_change = {"/api/me", "/api/auth/change-password", "/api/auth/logout"}
             if identity and identity["must_change_password"] and request.url.path not in allowed_during_change:
                 response = JSONResponse(status_code=403, content={"detail": "请先修改初始密码"})
@@ -515,13 +545,34 @@ def create_app(
             response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
+        response.headers.setdefault("Content-Security-Policy", (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "connect-src 'self'; font-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+            "connect-src 'self'; media-src 'self' blob:; font-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
             "form-action 'self'; object-src 'none'"
-        )
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        ))
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
         return response
+
+    @app.middleware("http")
+    async def speech_diagnostics(request: Request, call_next):
+        path = request.url.path
+        stage = "asr" if path == "/api/speech/asr" else "tts" if path == "/api/speech/tts" else "narration" if path.startswith("/api/runs/") and path.endswith("/narration") else None
+        if not stage:
+            return await call_next(request)
+        request_id = uuid.uuid4().hex[:12]
+        token = speech_request_id.set(request_id)
+        started = time.monotonic()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            response.headers["X-Speech-Request-ID"] = request_id
+            response.headers["Server-Timing"] = f"speech;dur={(time.monotonic() - started) * 1000:.0f}"
+            return response
+        finally:
+            logger.info("speech_request request_id=%s stage=%s elapsed_ms=%.0f status=%s",
+                        request_id, stage, (time.monotonic() - started) * 1000, status)
+            speech_request_id.reset(token)
 
     def current_identity(request: Request) -> dict:
         identity = auth_store.get_session(request.cookies.get(AUTH_COOKIE, ""))
@@ -598,6 +649,7 @@ def create_app(
         assistant_text: str,
         artifacts: list[dict] | None = None,
         metrics: dict | None = None,
+        run_id: str | None = None,
     ) -> None:
         user_content = _user_history_text(user_text, attachments, directory)
         session_store.append_exchange(
@@ -608,6 +660,7 @@ def create_app(
             title=user_text.strip().replace("\n", " ")[:28] or "新对话",
             artifacts=artifacts,
             metrics=metrics,
+            run_id=run_id,
         )
 
     def run_metrics(agent, started: float) -> dict:
@@ -681,7 +734,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="成果文件不存在")
         return FileResponse(str(target), filename=item["name"], media_type=item["mime"])
 
-    def register_confirmation(step: dict, provider: str, owner: str, workspace: Path) -> dict:
+    def register_confirmation(step: dict, provider: str, owner: str, workspace: Path, session_id: str, run_id: str) -> dict:
         if not _is_confirmation_step(step):
             return step
         result = step["result"]
@@ -691,6 +744,8 @@ def create_app(
         with pending_lock:
             pending_confirmations[confirmation_id] = {
                 "owner": owner,
+                "session_id": session_id,
+                "run_id": run_id,
                 "provider": provider,
                 "workspace": str(workspace),
                 "tool_name": confirmation.get("tool_name") or step["name"],
@@ -725,6 +780,7 @@ def create_app(
     if webui_dir.exists():
         app.mount("/static", StaticFiles(directory=str(webui_dir)), name="static")
 
+    @app.get("/display")
     @app.get("/")
     def index():
         html = webui_dir / "index.html"
@@ -1189,12 +1245,19 @@ def create_app(
         session = session_store.get_session(validate_session_id(session_id), owner)
         if session is None:
             raise HTTPException(status_code=404, detail="会话不存在")
+        session["runs"] = runs.session_runs(session_id, owner)
         return session
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str, request: Request):
         owner = current_user(request)
-        storage_names = session_store.delete_session(validate_session_id(session_id), owner)
+        with runs.lock:
+            require_session_access(session_id, owner)
+            try:
+                runs.delete_session(validate_session_id(session_id), owner)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            storage_names = session_store.delete_session(session_id, owner)
         if storage_names is None:
             raise HTTPException(status_code=404, detail="会话不存在")
         for storage_name in storage_names:
@@ -1206,32 +1269,57 @@ def create_app(
                 logger.warning("无法清理成果文件：%s", storage_name)
         return {"ok": True}
 
-    @app.post("/api/chat/stream")
-    async def chat_stream(req: StreamChatRequest, request: Request):
-        owner = current_user(request)
+    def submit_run(req: StreamChatRequest, owner: str):
         require_session_access(req.session_id, owner)
         require_provider(req.provider, owner)
+        fingerprint = hashlib.sha256(json.dumps(req.model_dump(), sort_keys=True).encode()).hexdigest()
+        existing = runs.get(req.run_id, owner)
+        if existing:
+            # submit() verifies the request fingerprint before reusing the run.
+            return runs.submit(existing, fingerprint, None, lambda: None)
         prompt = user_prompt(req, available_skills(owner))
         attachments = validate_attachment_files(req.attachments, owner)
-        workspace = user_workspace(owner)
-        files_before = workspace_snapshot(workspace)
-        stop_event = threading.Event()
-        with active_runs_lock:
-            if req.run_id in active_runs:
-                raise HTTPException(status_code=409, detail="任务标识已在使用")
-            for active in active_runs.values():
-                if active["owner"] == owner:
-                    raise HTTPException(status_code=409, detail="当前账号已有任务正在运行")
-            active_runs[req.run_id] = {
-                "session_id": req.session_id,
-                "owner": owner,
-                "stop_event": stop_event,
-            }
+        # Sessions are serialized, so a stable session workspace preserves follow-up files.
+        workspace = user_workspace(owner) / "sessions" / req.session_id
+        def prepare_run():
+            require_session_access(req.session_id, owner)
+            session_store.ensure_session(req.session_id, owner, req.text)
+            if workspace.exists():
+                return
+            workspace.mkdir(parents=True, exist_ok=True)
+            # Seed only this session's registered historical artifacts, not another
+            # session's files from the old shared account workspace.
+            for item in session_store.workspace_artifacts(req.session_id, owner):
+                source = (artifact_root / item["storage_name"]).resolve()
+                target = (workspace / item["source_path"]).resolve()
+                if not source.is_relative_to(artifact_root) or not target.is_relative_to(workspace):
+                    continue
+                if source.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
 
-        events: queue.Queue = queue.Queue()
+        def run_agent(stop_event, emit):
+            class Events:
+                def __init__(self):
+                    self.pending = []
+                    self.last = time.monotonic()
 
-        def run_agent():
+                def put(self, item):
+                    if item and item[0] == "assistant_delta":
+                        self.pending.append(item[1]["text"])
+                        if time.monotonic() - self.last < 0.05:
+                            return
+                        item = None
+                    if self.pending:
+                        emit("assistant_delta", {"text": "".join(self.pending)})
+                        self.pending.clear()
+                        self.last = time.monotonic()
+                    if item is not None:
+                        emit(*item)
+            events = Events()
+            files_before = workspace_snapshot(workspace)
             started = time.monotonic()
+            agent = None
             try:
                 try:
                     agent = agent_factory(req.provider, owner, str(workspace))
@@ -1241,7 +1329,7 @@ def create_app(
                     return
 
                 def on_step(step):
-                    step_out = _step_for_response(register_confirmation(step, req.provider, owner, workspace))
+                    step_out = _step_for_response(register_confirmation(step, req.provider, owner, workspace, req.session_id, req.run_id))
                     result = step_out.get("result") or {}
                     error = result.get("error") if isinstance(result, dict) else None
                     event_name = "confirmation_required" if error and error.get("type") == "ConfirmationRequired" else "tool_result"
@@ -1251,12 +1339,12 @@ def create_app(
                     if progress.get("type") == "tool_start":
                         events.put(("tool_start", {
                             "type": "tool_start", "id": str(progress.get("id") or "")[:128],
+                            "started_at": datetime.now(timezone.utc).isoformat(),
                             "name": str(progress.get("name") or "tool")[:64],
                         }))
                     else:
                         events.put(("tool_progress", _progress_for_response(progress)))
 
-                events.put(("agent_start", {"provider": req.provider}))
                 reply, steps = agent.run(
                     prompt,
                     attachments=attachments or None,
@@ -1268,7 +1356,7 @@ def create_app(
                 )
                 artifacts = capture_artifacts(workspace, files_before)
                 metrics = run_metrics(agent, started)
-                append_history(req.session_id, owner, req.text, attachments, req.directory, reply, artifacts, metrics)
+                append_history(req.session_id, owner, req.text, attachments, req.directory, reply, artifacts, metrics, req.run_id)
                 events.put(("agent_done", {
                     "reply": reply,
                     "steps_count": len(steps),
@@ -1294,51 +1382,110 @@ def create_app(
                         "error": f"请求处理失败，请稍后重试（错误编号：{error_id}）",
                     }))
             finally:
-                remove_attachments(attachments)
                 events.put(None)
-
-        threading.Thread(target=run_agent, daemon=True).start()
-
-        async def event_gen():
-            stream_started = time.monotonic()
-            last_event_at = stream_started
-            try:
-                while True:
-                    if await request.is_disconnected():
-                        stop_event.set()
-                        break
+                client = getattr(getattr(agent, "llm", None), "client", None)
+                if client is not None:
                     try:
-                        item = await asyncio.to_thread(events.get, True, 0.25)
-                    except queue.Empty:
-                        now = time.monotonic()
-                        if now - last_event_at >= SSE_KEEPALIVE_SECONDS:
-                            yield _sse("keepalive", {"elapsed_seconds": int(now - stream_started)})
-                            last_event_at = now
-                        continue
-                    if item is None:
-                        break
-                    event_name, data = item
-                    yield _sse(event_name, data)
-                    last_event_at = time.monotonic()
-            finally:
-                stop_event.set()
-                with active_runs_lock:
-                    active_runs.pop(req.run_id, None)
+                        client.close()
+                    except Exception:
+                        logger.warning("关闭模型连接失败", exc_info=True)
 
-        return StreamingResponse(
-            event_gen(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
-        )
+        run = {"id": req.run_id, "owner": owner, "session_id": req.session_id,
+               "provider": req.provider, "text": req.text, "attachments": [a.model_dump() for a in req.attachments],
+               "directory": req.directory.model_dump() if req.directory else None}
+        try:
+            return runs.submit(run, fingerprint, run_agent, prepare_run)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+
+    async def event_stream(request, owner, after=0, run_id=None):
+        cursor = after
+        last_event_at = time.monotonic()
+        started = last_event_at
+        last_auth_at = 0
+        while not await request.is_disconnected():
+            # Recheck login/disable/revocation during long-lived subscriptions.
+            if time.monotonic() - last_auth_at >= 15:
+                identity = await asyncio.to_thread(auth_store.get_session, request.cookies.get(AUTH_COOKIE, ""))
+                if not identity or identity["must_change_password"]:
+                    yield _sse("auth_expired", {})
+                    return
+                last_auth_at = time.monotonic()
+            batch = await asyncio.to_thread(runs.events, owner, cursor, run_id)
+            for item in batch:
+                cursor = item["seq"]
+                if run_id and item["event"] == "run_created":
+                    continue
+                if run_id:
+                    yield f"id: {cursor}\n" + _sse(item["event"], item["data"])
+                else:
+                    yield f"id: {cursor}\n" + _sse("run_event", {k: item[k] for k in ("seq", "run_id", "event", "data")})
+                last_event_at = time.monotonic()
+            if run_id and not batch:
+                run = await asyncio.to_thread(runs.get, run_id, owner)
+                if not run or run["status"] in TERMINAL:
+                    return
+            if time.monotonic() - last_event_at >= SSE_KEEPALIVE_SECONDS:
+                yield _sse("keepalive", {"elapsed_seconds": int(time.monotonic() - started)})
+                last_event_at = time.monotonic()
+            await asyncio.sleep(0.1)
+
+    def streaming(request, owner, after=0, run_id=None):
+        return StreamingResponse(event_stream(request, owner, after, run_id), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/runs")
+    def create_run(req: StreamChatRequest, request: Request):
+        try:
+            return submit_run(req, current_user(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get("/api/runs")
+    def list_runs(request: Request):
+        return runs.snapshot(current_user(request))
+
+    @app.get("/api/events")
+    def account_events(request: Request, after: int = 0):
+        try:
+            cursor = max(0, int(request.headers.get("Last-Event-ID") or after))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="事件游标无效")
+        return streaming(request, current_user(request), cursor)
+
+    @app.get("/api/runs/{run_id}")
+    def get_run(run_id: str, request: Request):
+        run = runs.get(run_id, current_user(request))
+        if not run:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return run
+
+    @app.get("/api/runs/{run_id}/events")
+    def run_events(run_id: str, request: Request, after: int = 0):
+        owner = current_user(request)
+        if not runs.get(run_id, owner):
+            raise HTTPException(status_code=404, detail="任务不存在")
+        try:
+            cursor = max(0, int(request.headers.get("Last-Event-ID") or after))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="事件游标无效")
+        return streaming(request, owner, cursor, run_id)
+
+    @app.post("/api/chat/stream")
+    def chat_stream(req: StreamChatRequest, request: Request):
+        owner = current_user(request)
+        try:
+            submit_run(req, owner)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return streaming(request, owner, run_id=req.run_id)
 
     @app.post("/api/chat/stop")
     def stop_chat(req: StopRequest, request: Request):
-        owner = current_user(request)
-        with active_runs_lock:
-            active = active_runs.get(req.run_id)
-            if not active or active["session_id"] != req.session_id or active["owner"] != owner:
-                raise HTTPException(status_code=404, detail="运行中的任务不存在")
-            active["stop_event"].set()
+        if not runs.stop(req.run_id, current_user(request), req.session_id):
+            raise HTTPException(status_code=404, detail="运行中的任务不存在")
         return {"ok": True}
 
     @app.post("/api/tool/confirm")
@@ -1346,27 +1493,99 @@ def create_app(
         owner = current_user(request)
         with pending_lock:
             pending = pending_confirmations.get(req.confirmation_id)
-            if pending and pending["owner"] == owner:
-                pending_confirmations.pop(req.confirmation_id, None)
-            else:
-                pending = None
-        if pending is None:
-            raise HTTPException(status_code=404, detail="确认请求不存在或已过期")
+            if not pending or pending["owner"] != owner:
+                raise HTTPException(status_code=404, detail="确认请求不存在或已过期")
+            require_session_access(pending["session_id"], owner)
+            require_provider(pending["provider"], owner)
+            workspace = Path(pending["workspace"])
+            run_id = uuid.uuid4().hex
+
+            def work(stop_event, emit):
+                started = time.monotonic()
+                agent = agent_factory(pending["provider"], owner, str(workspace))
+                before = workspace_snapshot(workspace)
+                result = agent.tool_registry.execute(pending["tool_name"], pending["args"], confirmed=True,
+                                                     stop_event=stop_event, execution_timeout=300)
+                step = {"type": "tool_call", "id": req.confirmation_id, "name": pending["tool_name"], "result": result.to_dict()}
+                emit("tool_result", _step_for_response(step))
+                artifacts = capture_artifacts(workspace, before)
+                reply = "已确认并执行，结果见执行记录。" if result.ok else "已确认执行，但操作未成功，请查看执行记录。"
+                metrics = run_metrics(agent, started)
+                session_store.append_exchange(pending["session_id"], owner, "确认执行业务操作", reply,
+                                              title="确认执行业务操作", artifacts=artifacts, metrics=metrics, run_id=run_id)
+                emit("agent_done", {"reply": reply, "artifacts": [artifact_response(item) for item in artifacts], "metrics": metrics})
+
+            run = {"id": run_id, "owner": owner, "session_id": pending["session_id"],
+                   "provider": pending["provider"], "text": "确认执行业务操作"}
+            try:
+                runs.submit(run, req.confirmation_id, work, lambda: None)
+            except OverflowError as exc:
+                raise HTTPException(status_code=429, detail=str(exc))
+            pending_confirmations.pop(req.confirmation_id, None)
+        step = {"type": "tool_call", "name": pending["tool_name"],
+                "result": {"ok": True, "data": "已确认，操作已进入任务队列"}}
+        original = runs.get(pending["run_id"], owner)
+        if original:
+            for old_step in original["steps"]:
+                if ((old_step.get("result") or {}).get("meta") or {}).get("confirmation", {}).get("id") == req.confirmation_id:
+                    runs.emit(pending["run_id"], "tool_result", {**step, "id": old_step.get("id")})
+        return {"run_id": run_id, "step": step}
+
+    @app.get("/api/speech/capabilities")
+    def speech_capabilities(request: Request):
+        current_user(request)
+        configured = bool(speech.settings()["api_key"])
+        return {"asr": configured, "tts": configured, "narration": True, "max_bytes": 10 * 1024 * 1024}
+
+    @app.post("/api/runs/{run_id}/narration")
+    def prepare_narration(run_id: str, req: NarrationRequest, request: Request):
+        owner = current_user(request)
+        run = runs.get(run_id, owner)
+        if run is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        require_provider(run["provider"], owner)
         try:
-            agent = agent_factory(pending["provider"], owner, pending["workspace"])
+            return narration.prepare(owner, run, req.kind, req.offset, req.anchor, req.previous)
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+
+    @app.post("/api/speech/asr")
+    def transcribe_audio(request: Request, file: UploadFile = File(...)):
+        current_user(request)
+        if not speech.settings()["api_key"]:
+            raise HTTPException(status_code=503, detail="管理员尚未配置语音识别服务")
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in {".webm", ".mp4", ".m4a", ".ogg", ".wav"}:
+            raise HTTPException(status_code=415, detail="不支持的录音格式")
+        data = file.file.read(10 * 1024 * 1024 + 1)
+        if not data or len(data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="录音为空或超过 10 MB")
+        if not speech.asr_limit.acquire(blocking=False):
+            raise HTTPException(status_code=429, detail="语音服务繁忙，请稍后再试")
+        try:
+            return {"text": speech.transcribe("recording" + suffix, data)}
         except Exception:
-            logger.exception("模型服务初始化失败")
-            raise HTTPException(status_code=400, detail="模型服务暂不可用")
-        result = agent.tool_registry.execute(pending["tool_name"], pending["args"], confirmed=True)
-        return {
-            "confirmation_id": req.confirmation_id,
-            "step": {
-                "type": "tool_call",
-                "name": pending["tool_name"],
-                "args": pending["args"],
-                "result": result.to_dict(),
-            },
-        }
+            logger.warning("语音识别失败 request_id=%s", speech_request_id.get(), exc_info=False)
+            raise HTTPException(status_code=502, detail="语音识别失败，请重试或输入文字")
+        finally:
+            speech.asr_limit.release()
+            file.file.close()
+
+    @app.post("/api/speech/tts")
+    def synthesize_audio(req: SpeechRequest, request: Request):
+        owner = current_user(request)
+        if not speech.settings()["api_key"]:
+            raise HTTPException(status_code=503, detail="管理员尚未配置语音合成服务")
+        if not speech.limit.acquire(blocking=False):
+            raise HTTPException(status_code=429, detail="语音服务繁忙，请稍后再试")
+        try:
+            path = speech.synthesize(owner, req.text)
+            return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "private, no-store"})
+        except Exception:
+            logger.exception("语音合成失败")
+            raise HTTPException(status_code=502, detail="语音播放暂不可用，文字显示不受影响")
+        finally:
+            speech.limit.release()
 
     @app.post("/api/upload")
     def upload(request: Request, file: UploadFile = File(...)):
@@ -1414,6 +1633,35 @@ def create_app(
         if item is None:
             raise HTTPException(status_code=404, detail="成果文件不存在")
         return artifact_file_response(item)
+
+    @app.head("/api/artifacts/{artifact_id}/preview")
+    @app.get("/api/artifacts/{artifact_id}/preview")
+    def preview_artifact(artifact_id: str, request: Request):
+        owner = current_user(request)
+        if not SAFE_ARTIFACT_ID_RE.fullmatch(artifact_id):
+            raise HTTPException(status_code=404, detail="成果文件不存在")
+        item = session_store.get_artifact(artifact_id, owner)
+        if item is None:
+            raise HTTPException(status_code=404, detail="成果文件不存在")
+        if item["mime"] != "text/html":
+            raise HTTPException(status_code=415, detail="仅支持 HTML 报表预览")
+        response = artifact_file_response(item)
+        if request.method != "HEAD":
+            content = Path(response.path).read_text(encoding="utf-8")
+            flow = Path(__file__).with_name("report_flow.html").read_text(encoding="utf-8")
+            content = (flow + "</body>").join(content.rsplit("</body>", 1)) if "</body>" in content else content + flow
+            response = HTMLResponse(content)
+        response.headers["Content-Disposition"] = "inline"
+        # Opaque origin even when opened directly; report JS cannot access app cookies/APIs.
+        response.headers["Content-Security-Policy"] = (
+            "sandbox allow-scripts allow-downloads; default-src 'none'; "
+            "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "img-src data: blob:; font-src data:; connect-src 'none'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/download/{file_path:path}")
     def download_workspace_file(file_path: str, request: Request):

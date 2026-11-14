@@ -1,6 +1,9 @@
 ---
 name: office-io
 description: Read and write common office files including Word docx, Excel xlsx, PDF, PowerPoint pptx, Markdown, text, and CSV. Use when the user asks to inspect, extract, summarize, create, or modify office documents.
+metadata:
+  display_name: Office 文档处理
+  display_description: 读取和生成办公文档、表格与演示文件
 ---
 
 # Office IO Skill

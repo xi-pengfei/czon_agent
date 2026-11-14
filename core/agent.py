@@ -65,6 +65,7 @@ class Agent:
         deadline = time.monotonic() + self.max_runtime_seconds
         iteration = 0
         consecutive_errors = 0
+        streamed_text = False
         self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
         while True:
@@ -72,11 +73,23 @@ class Agent:
             iteration += 1
             logger.info(f"第 {iteration} 轮 LLM 调用")
             tools = self.tool_registry.get_openai_schemas()
+            round_started = False
+
+            def public_delta(text):
+                nonlocal round_started, streamed_text
+                if not text or not on_delta:
+                    return
+                if not round_started and streamed_text:
+                    on_delta("\n\n")
+                round_started = True
+                streamed_text = True
+                on_delta(text)
+
             msg = self._complete(
                 system,
                 messages,
                 tools,
-                on_delta=on_delta,
+                on_delta=public_delta if on_delta else None,
                 stop_event=stop_event,
                 deadline=deadline,
             )

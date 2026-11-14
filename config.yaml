@@ -63,6 +63,10 @@ tool_policy:
 
 # WebUI 配置
 webui:
+  runs:
+    max_workers: 3  # 整个 WebUI 最多同时执行 3 项
+    per_owner: 3    # 单账号最多同时执行 3 项，仍受全局上限约束
+    max_pending: 32 # 运行与排队任务合计上限
   # 允许本机和局域网直连；应用自身负责登录。仅本机使用时可改为 127.0.0.1。
   host: 0.0.0.0
   port: 8000
@@ -71,3 +75,15 @@ webui:
   cookie_secure: false
   extra_rules:
     - "When creating or modifying a file under {workspace_dir}/, provide a Markdown download link using /download/<relative-path>. Example: [下载文件](/download/report.docx)."
+
+# 小智 MCP：运行 python main.py xiaozhi 启动，无需启用开关。
+xiaozhi:
+  # 系统中已有的登录账号名；更换后沿用该账号的权限。
+  username: "admin"
+  # 系统模型配置名称；留空自动选择可用模型，不需要填写 API Key。
+  # 如设置了 CZON_ACTIVE_PROVIDER 环境变量，则优先使用环境变量。
+  provider: ""
+
+# 硅基流动默认播报音色：沉稳男声
+speech:
+  voice: "FunAudioLLM/CosyVoice2-0.5B:anna"

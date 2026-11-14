@@ -1,0 +1,74 @@
+<style>
+html.czon-flow,html.czon-flow body{height:auto;min-height:0;margin:0;background:transparent;overflow:hidden}
+.czon-flow main{box-sizing:border-box;max-width:100%;margin:0;padding:8px 0 16px}
+.czon-flow header{flex-wrap:wrap;gap:12px;border:0;margin:0 0 18px;padding:0;background:transparent}
+.czon-flow .brand-icon,.czon-flow #print,.czon-flow .skip{display:none}
+.czon-flow .brand{max-width:100%;font-size:13px;color:#536a76}
+.czon-flow .head-actions{flex-wrap:wrap;justify-content:flex-start}
+.czon-flow .hero{display:block;margin-bottom:18px}
+.czon-flow #customer-title{font-size:22px;overflow-wrap:anywhere}
+.czon-flow .hero-right{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 12px;margin-top:12px;padding:0;border:0;background:transparent;text-align:left;white-space:normal}
+.czon-flow .meta{gap:6px 12px}
+.czon-flow .meta>span{border:0;background:transparent;padding:0}
+.czon-flow .kpis{grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:10px}
+.czon-flow .kpi{padding:12px;box-shadow:none}
+.czon-flow .kpi strong{font-size:24px;overflow-wrap:anywhere}
+.czon-flow .charts{grid-template-columns:repeat(auto-fit,minmax(min(330px,100%),1fr));gap:20px}
+.czon-flow .panel{overflow:visible;border:0;border-radius:0;box-shadow:none;background:transparent;min-width:0}
+.czon-flow .panel-top{padding:8px 0;flex-wrap:wrap;gap:10px}
+.czon-flow .chart{box-sizing:border-box;height:300px;padding:0;max-width:100%}
+.czon-flow .pager,.czon-flow .chart-foot{padding:4px 0 12px}
+.czon-flow .table-scroll,.czon-flow details .table-scroll{max-height:none;overflow:visible}
+.czon-flow table{width:100%;table-layout:fixed;white-space:normal}
+.czon-flow th,.czon-flow td{position:static;padding:10px 6px;overflow-wrap:anywhere;white-space:normal}
+.czon-flow td.name{min-width:0;max-width:none}
+.czon-flow #detail-table,.czon-flow #detail-table tbody{display:block}
+.czon-flow #detail-table thead{display:none}
+.czon-flow #detail-table tr{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px;margin:12px 0;padding-bottom:12px;border-bottom:1px solid #e5ecee}
+.czon-flow #detail-table td{display:block;text-align:left;border:0;min-width:0}
+.czon-flow #detail-table td:first-child{grid-column:1/-1;font-weight:600}
+.czon-flow #detail-table td:not(:first-child)::before{content:attr(data-label);display:block;font-size:12px;color:#536a76;margin-bottom:5px}
+.czon-flow footer{flex-wrap:wrap}
+@media(max-width:600px){
+.czon-flow #customer-summary> .table-scroll>table,.czon-flow #customer-rows,.czon-flow #totals-row{display:block}
+.czon-flow #customer-summary> .table-scroll>table>thead{display:block}
+.czon-flow #customer-summary> .table-scroll>table>thead tr{display:flex;flex-wrap:wrap;gap:4px 12px}
+.czon-flow #customer-summary> .table-scroll>table>thead th{display:block;background:transparent;padding:0;font-size:12px}
+.czon-flow #customer-rows tr,.czon-flow #totals-row tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;border-bottom:1px solid #e5ecee;padding:12px 0}
+.czon-flow #customer-rows td,.czon-flow #totals-row td{display:block;border:0;text-align:left;padding:0;min-width:0;background:transparent}
+.czon-flow #customer-rows td:nth-child(2),.czon-flow #totals-row td:nth-child(2){grid-column:1/-1;grid-row:1;font-weight:600}
+.czon-flow #customer-rows td::before,.czon-flow #totals-row td::before{content:attr(data-label);display:block;color:#536a76;font-size:12px;font-weight:400;margin-bottom:3px}
+}
+</style>
+<script>
+(()=>{
+ const report=document.getElementById('report-data');
+ if(report&&parent!==window)document.documentElement.classList.add('czon-flow');
+ // Older saved reports also show every cost row without requerying business data.
+ if(report&&document.getElementById('cost-prev')&&typeof costChart!=='undefined'&&costChart){
+  const pager=document.getElementById('cost-prev').closest('.pager');if(pager)pager.remove();
+  document.getElementById('cost-chart').style.height=Math.max(300,costs.length*30+65)+'px';
+  costChart.resize();costChart.setOption({...horizontal(costs),dataZoom:[]},true);
+ }
+ const root=document.querySelector('main')||document.body;
+ let queued=false,lastHeight=0;
+ function refresh(){
+  queued=false;
+  document.querySelectorAll('table').forEach(table=>{
+   const headings=Array.from(table.querySelectorAll('thead th'),th=>th.textContent.replace('↕','').trim());
+   table.querySelectorAll('tbody tr,tfoot tr').forEach(row=>Array.from(row.children).forEach((cell,i)=>{
+    const label=headings[i]||'';if(cell.getAttribute('data-label')!==label)cell.setAttribute('data-label',label);
+   }));
+  });
+  const height=Math.ceil(root.getBoundingClientRect().height)+24;
+  if(height>0&&height!==lastHeight){lastHeight=height;parent.postMessage({type:'czon-report-height',height},'*')}
+ }
+ function schedule(){if(!queued){queued=true;requestAnimationFrame(refresh)}}
+ new ResizeObserver(schedule).observe(root);
+ new MutationObserver(schedule).observe(root,{childList:true,subtree:true});
+ window.addEventListener('load',schedule);window.addEventListener('resize',schedule);
+ document.addEventListener('toggle',schedule,true);
+ if(document.fonts)document.fonts.ready.then(schedule);
+ schedule();
+})();
+</script>

@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 import zipfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -119,7 +120,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": self.session_id,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 422)
@@ -139,7 +140,7 @@ class ServerSecurityTests(unittest.TestCase):
                 }],
                 "provider": "qwen",
                 "session_id": self.session_id,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 422)
@@ -165,17 +166,19 @@ class ServerSecurityTests(unittest.TestCase):
             json={
                 "text": "read", "attachments": [attachment], "provider": "qwen",
                 "session_id": "7" * 32,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], "附件不存在或不属于当前用户")
         owner_response = self.client.post(
             "/api/chat/stream", headers=self.headers,
-            json={"text": "read", "attachments": [attachment], "provider": "qwen", "session_id": "6" * 32, "run_id": "0" * 32},
+            json={"text": "read", "attachments": [attachment], "provider": "qwen", "session_id": "6" * 32, "run_id": uuid.uuid4().hex},
         )
         self.assertEqual(owner_response.status_code, 200)
-        self.assertFalse(uploaded_path.exists())
+        # Retained for queued requests and idempotent retries, then retention-cleaned.
+        self.assertTrue(uploaded_path.exists())
+        uploaded_path.unlink()
 
     def test_local_directory_manifest_is_bounded_untrusted_context(self):
         response = self.client.post(
@@ -192,7 +195,7 @@ class ServerSecurityTests(unittest.TestCase):
                 },
                 "provider": "qwen",
                 "session_id": self.session_id,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -214,7 +217,7 @@ class ServerSecurityTests(unittest.TestCase):
                 },
                 "provider": "qwen",
                 "session_id": self.session_id,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 422)
@@ -286,7 +289,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": session_id,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -345,7 +348,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "attachments": [],
                 "provider": "qwen",
                 "session_id": "9" * 32,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -364,7 +367,7 @@ class ServerSecurityTests(unittest.TestCase):
         bob_response = bob.post(
             "/api/chat/stream",
             headers={"X-CSRF-Token": bob_login.json()["csrf_token"]},
-            json={"text": "export", "attachments": [], "provider": "qwen", "session_id": "8" * 32, "run_id": "0" * 32},
+            json={"text": "export", "attachments": [], "provider": "qwen", "session_id": "8" * 32, "run_id": uuid.uuid4().hex},
         )
         self.assertEqual(bob_response.status_code, 200)
         self.assertEqual(len(set(user_workspaces)), 2)
@@ -375,6 +378,54 @@ class ServerSecurityTests(unittest.TestCase):
         deleted = client.delete("/api/sessions/" + "9" * 32, headers={"X-CSRF-Token": login.json()["csrf_token"]})
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(all(not path.exists() for path in stored_artifacts))
+
+    def test_html_preview_is_owned_and_sandboxed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = Path(temp) / "sessions.db"
+            auth = AuthStore(db)
+            auth.seed_roles(DEFAULT_ROLES)
+            auth.create_user("alice", "AlicePassword123", "standard", must_change=False)
+            auth.create_user("bob", "BobPassword12345", "standard", must_change=False)
+            class ReportAgent:
+                def __init__(self, workspace):
+                    self.workspace = Path(workspace)
+                def run(self, text, **kwargs):
+                    (self.workspace / "report.html").write_text('<html><body><script>window.sample="</body>";</script></body></html>')
+                    (self.workspace / "report.xlsx").write_bytes(b"test-workbook")
+                    return "报表已生成", []
+            app = create_app(lambda provider, owner, workspace: ReportAgent(workspace),
+                             workspace_dir=Path(temp) / "workspace", project_root=Path(__file__).resolve().parents[1],
+                             session_db_path=db, auth_store=auth)
+            client = TestClient(app)
+            login = client.post("/api/auth/login", json={"username": "alice", "password": "AlicePassword123"})
+            headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+            client.post("/api/chat/stream", headers=headers, json={"text": "report", "provider": "qwen", "session_id": "7" * 32, "run_id": uuid.uuid4().hex})
+            artifacts = client.get("/api/sessions/" + "7" * 32).json()["messages"][1]["artifacts"]
+            html = next(item for item in artifacts if item["name"] == "report.html")
+            excel = next(item for item in artifacts if item["name"] == "report.xlsx")
+            url = f"/api/artifacts/{html['id']}/preview"
+            response = client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(client.head(url).status_code, 200)
+            self.assertEqual(response.headers["content-disposition"], "inline")
+            self.assertIn('window.sample="</body>";</script>', response.text)
+            self.assertEqual(response.text.count("czon-report-height"), 1)
+            self.assertIn("czon-report-height", response.text)
+            self.assertIn("ResizeObserver", response.text)
+            self.assertIn("max-height:none;overflow:visible", response.text)
+            policy = response.headers["content-security-policy"]
+            self.assertIn("sandbox allow-scripts allow-downloads", policy)
+            self.assertNotIn("allow-same-origin", policy)
+            self.assertIn("connect-src 'none'", policy)
+            self.assertIn("frame-ancestors 'self'", policy)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertEqual(client.get(f"/api/artifacts/{excel['id']}/preview").status_code, 415)
+            self.assertEqual(TestClient(app).get(url).status_code, 401)
+            bob = TestClient(app)
+            bob.post("/api/auth/login", json={"username": "bob", "password": "BobPassword12345"})
+            self.assertEqual(bob.get(url).status_code, 404)
+            client.delete("/api/sessions/" + "7" * 32, headers=headers)
+            self.assertEqual(client.get(url).status_code, 404)
 
     def test_skill_catalog_and_execution_are_filtered_by_user(self):
         root = Path(__file__).resolve().parents[1]
@@ -419,7 +470,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "provider": "qwen",
                 "session_id": "f" * 32,
                 "skill": "daily-report",
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(denied.status_code, 403)
@@ -431,7 +482,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "attachments": [],
                 "provider": "kimi",
                 "session_id": "f" * 32,
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(denied_model.status_code, 403)
@@ -444,7 +495,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "provider": "qwen",
                 "session_id": "f" * 32,
                 "skill": "invoice-ocr",
-                "run_id": "0" * 32,
+                "run_id": uuid.uuid4().hex,
             },
         )
         self.assertEqual(allowed.status_code, 200)
@@ -715,13 +766,19 @@ class ServerSecurityTests(unittest.TestCase):
                 "cookie_secure": False,
             },
         }
+        cert = root / "local.pem"; key = root / "local-key.pem"
+        cert.write_text("fixture certificate"); key.write_text("fixture private key")
+        config["webui"].update(ssl_certfile=str(cert), ssl_keyfile=str(key))
         with patch("uvicorn.run") as run:
             cmd_webui(config, None)
+        self.assertEqual(run.call_args.kwargs["ssl_certfile"], str(cert))
+        self.assertEqual(run.call_args.kwargs["ssl_keyfile"], str(key))
         app = run.call_args.args[0]
         auth = AuthStore(db_path)
         auth.create_user("runtime_admin", "RuntimeAdmin123", "administrator", must_change=False)
-        client = TestClient(app)
+        client = TestClient(app, base_url="https://testserver")
         login = client.post("/api/auth/login", json={"username": "runtime_admin", "password": "RuntimeAdmin123"})
+        self.assertIn("Secure", login.headers.get("set-cookie", ""))
         headers = {"X-CSRF-Token": login.json()["csrf_token"]}
 
         self.assertEqual([item["name"] for item in client.get("/api/skills").json()["skills"]], ["runtime-skill"])
@@ -771,15 +828,13 @@ class ServerSecurityTests(unittest.TestCase):
         thread.start()
         self.assertTrue(started.wait(timeout=2))
         duplicate = client.post(
-            "/api/chat/stream",
-            headers=headers,
-            json={
-                "text": "again", "attachments": [], "provider": "qwen",
-                "session_id": self.session_id, "run_id": "e" * 32,
-            },
+            "/api/runs", headers=headers,
+            json={"text": "again", "provider": "qwen", "session_id": self.session_id, "run_id": "e" * 32},
         )
-        self.assertEqual(duplicate.status_code, 409)
-        self.assertEqual(duplicate.json()["detail"], "当前账号已有任务正在运行")
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(duplicate.json()["status"], "queued")
+        client.post("/api/chat/stop", headers=headers,
+                    json={"session_id": self.session_id, "run_id": "e" * 32})
         stop = client.post(
             "/api/chat/stop",
             headers=headers,

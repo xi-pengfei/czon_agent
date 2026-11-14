@@ -1,19 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Menu, PanelLeftOpen, Settings } from "lucide-react";
-import { api, apiResponse, parseSseEvent, randomId, setCsrfToken } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Menu, PanelLeftOpen, Settings, Plus, Monitor, Volume2, VolumeX } from "lucide-react";
+import { Link } from "react-router-dom";
+import { api, randomId, setCsrfToken } from "../api";
+import { useNarration } from "../hooks/useNarration";
 import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
 import { Sidebar } from "../components/Sidebar";
-import type { Artifact, Attachment, ChatMessage, Identity, LocalDirectory, Provider, RunMetrics, Session, Skill, ToolStep } from "../types";
+import { useRuns, isActive } from "../hooks/useRuns";
+import type { Run } from "../hooks/useRuns";
+import type { Attachment, ChatMessage, Identity, LocalDirectory, Provider, Session, Skill, ToolStep } from "../types";
 
-type Props = { identity: Identity; onLogout: () => void };
-type ActiveRun = { id: string; controller: AbortController };
+type Props = { identity: Identity; onLogout: () => void; display?: boolean };
+type HistoryMessage = ChatMessage & { run_id?: string; duration_ms?: number; input_tokens?: number; output_tokens?: number };
 
-export function ChatPage({ identity, onLogout }: Props) {
+export function ChatPage({ identity, onLogout, display = false }: Props) {
   const storageKey = `czon_agent_session_id:${identity.username}`;
   const [sessionId, setSessionId] = useState(() => sessionStorage.getItem(storageKey) || randomId());
+  const currentSession = useRef(sessionId); currentSession.current = sessionId;
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [historyRuns, setHistoryRuns] = useState<Run[]>([]);
+  const [history, setHistory] = useState<HistoryMessage[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [provider, setProvider] = useState(() => localStorage.getItem("czon_agent_provider") || "");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -21,230 +27,166 @@ export function ChatPage({ identity, onLogout }: Props) {
   const [directory, setDirectory] = useState<LocalDirectory | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 760);
   const [notice, setNotice] = useState("");
-  const activeRun = useRef<ActiveRun | null>(null);
-  const [running, setRunning] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const wasDisplay = useRef(display);
+  const displayedRun = useRef<string | undefined>(undefined);
+  const requests = useRef(new Map<string, { signature: string; id: string }>());
+  const [submitting, setSubmitting] = useState(false);
+  const [scrollRequest, setScrollRequest] = useState(0);
+  const { runs, connected, revision } = useRuns(identity.username);
+  const orderedRuns = useMemo(() => Object.values(runs).sort((a, b) => a.created_at.localeCompare(b.created_at)), [runs]);
+  const selected = orderedRuns.filter(run => run.session_id === sessionId);
+  const selectedCache = useRef<Run[]>([]);
+  if (selected.length !== selectedCache.current.length || selected.some((run, index) => run !== selectedCache.current[index])) selectedCache.current = selected;
+  const sessionRuns = useMemo(() => [...new Map([...historyRuns, ...selectedCache.current].filter(run => run.session_id === sessionId).map(run => [run.id, run])).values()].sort((a, b) => a.created_at.localeCompare(b.created_at)), [historyRuns, selectedCache.current, sessionId]);
+  const active = sessionRuns.find(isActive);
+  const narration = useNarration(sessionRuns[sessionRuns.length - 1], speaking,
+    text => { setNotice(text); setSpeaking(false); },
+    () => {});
+  const running = Boolean(active);
+  const activeSessions = new Set(orderedRuns.filter(isActive).map(run => run.session_id));
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
-  useEffect(() => {
-    if (!running) return;
-    const startedAt = Date.now();
-    setElapsedSeconds(0);
-    const timer = window.setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
+  const [confirmed, setConfirmed] = useState<Record<string, ToolStep>>({});
 
   const rememberSession = useCallback((id: string) => {
     setSessionId(id); sessionStorage.setItem(storageKey, id);
   }, [storageKey]);
-
-  const loadSessions = useCallback(async (restore = false) => {
+  useEffect(() => { document.title = display ? "任务大屏 · czon Agent" : "工作台 · czon Agent"; }, [display]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const resize = () => {
+      // Safari's layout viewport does not shrink when the software keyboard opens.
+      if (!viewport || viewport.scale !== 1) return;
+      document.documentElement.style.setProperty("--chat-height", `${viewport.height}px`);
+    };
+    resize(); viewport?.addEventListener("resize", resize);
+    return () => { viewport?.removeEventListener("resize", resize); document.documentElement.style.removeProperty("--chat-height"); };
+  }, []);
+  useEffect(() => { sessionStorage.setItem(storageKey, sessionId); }, [storageKey, sessionId]);
+  const loadSessions = useCallback(async () => {
     const data = await api<{ sessions: Session[] }>("/api/sessions", { cache: "no-store" });
     setSessions(data.sessions);
-    if (!restore) return;
-    const saved = sessionStorage.getItem(storageKey);
-    const current = data.sessions.find((item) => item.id === saved);
-    if (current) {
-      const detail = await api<{ title: string; messages: Array<{ role: "user" | "assistant"; content: string; artifacts?: Artifact[]; duration_ms?: number; input_tokens?: number; output_tokens?: number }> }>(`/api/sessions/${current.id}`, { cache: "no-store" });
-      rememberSession(current.id);
-      setMessages(detail.messages.map((message, index) => ({ id: `history-${index}`, role: message.role, content: message.content, artifacts: message.artifacts, metrics: message.role === "assistant" ? { duration_ms: message.duration_ms, input_tokens: message.input_tokens, output_tokens: message.output_tokens } : undefined, state: "done" })));
-    } else {
-      const id = randomId(); rememberSession(id); setMessages([]);
-    }
-  }, [rememberSession, storageKey]);
-
+  }, []);
+  useEffect(() => { void loadSessions().catch(() => setNotice("会话列表暂时无法更新")); }, [loadSessions, revision]);
+  useEffect(() => {
+    let cancelled = false;
+    setHistory([]); setHistoryRuns([]);
+    api<{ messages: HistoryMessage[]; runs: Run[] }>(`/api/sessions/${sessionId}`, { cache: "no-store" })
+      .then(data => { if (!cancelled) { setHistory(data.messages); setHistoryRuns(data.runs || []); } }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [sessionId]);
   useEffect(() => {
     void Promise.all([
-      api<Provider[]>("/api/providers", { cache: "no-store" }).then((items) => {
-        setProviders(items);
-        const available = items.filter((item) => item.configured);
-        const selected = available.some((item) => item.name === provider) ? provider : available[0]?.name || "";
-        setProvider(selected);
-      }),
-      api<{ skills: Skill[] }>("/api/skills", { cache: "no-store" }).then((data) => setSkills(data.skills)),
-      loadSessions(true),
-    ]).catch((error) => setNotice(error instanceof Error ? error.message : "加载失败"));
-  }, []); // Identity is fixed for the mounted page.
+      api<Provider[]>("/api/providers").then(items => { setProviders(items); setProvider(previous => items.some(item => item.name === previous && item.configured) ? previous : items.find(item => item.configured)?.name || ""); }),
+      api<{ skills: Skill[] }>("/api/skills").then(data => setSkills(data.skills)),
+    ]).catch(error => setNotice(String(error)));
+  }, []);
+  useEffect(() => {
+    if (!active) { setElapsedSeconds(0); return; }
+    const tick = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - Date.parse(active.started_at || active.created_at)) / 1000)));
+    tick(); const timer = setInterval(tick, 1000); return () => clearInterval(timer);
+  }, [active?.id, active?.started_at]);
+  useEffect(() => {
+    const latest = orderedRuns[orderedRuns.length - 1];
+    if (display && !wasDisplay.current) {
+      // Entering display mode must not replace the task currently being heard.
+      displayedRun.current = latest?.id;
+    } else if (display && latest && latest.id !== displayedRun.current) {
+      rememberSession(latest.session_id); displayedRun.current = latest.id;
+    }
+    wasDisplay.current = display;
+  }, [display, orderedRuns, rememberSession]);
 
-  async function openSession(id: string) {
-    if (running) return setNotice("请先停止当前任务");
-    try {
-      const detail = await api<{ title: string; messages: Array<{ role: "user" | "assistant"; content: string; artifacts?: Artifact[]; duration_ms?: number; input_tokens?: number; output_tokens?: number }> }>(`/api/sessions/${id}`, { cache: "no-store" });
-      rememberSession(id); setAttachments([]); setDirectory(null);
-      setMessages(detail.messages.map((message, index) => ({ id: `history-${index}`, role: message.role, content: message.content, artifacts: message.artifacts, metrics: message.role === "assistant" ? { duration_ms: message.duration_ms, input_tokens: message.input_tokens, output_tokens: message.output_tokens } : undefined, state: "done" })));
-      if (window.innerWidth <= 760) setSidebarOpen(false);
-    } catch (error) { setNotice(error instanceof Error ? error.message : "会话加载失败"); }
-  }
+  const messages: ChatMessage[] = useMemo(() => {
+    const byRun = new Map(sessionRuns.map(run => [run.id, run]));
+    const covered = new Set(history.map(message => message.run_id).filter(Boolean));
+    const result: ChatMessage[] = history.map(message => ({ ...message, id: `history-${message.id}`, state: "done", steps: message.role === "assistant" && message.run_id ? byRun.get(message.run_id)?.steps : undefined, metrics: message.role === "assistant" ? { duration_ms: message.duration_ms, input_tokens: message.input_tokens, output_tokens: message.output_tokens } : undefined }));
+    for (const run of sessionRuns) {
+      if (covered.has(run.id)) continue;
+      result.push({ id: `user-${run.id}`, role: "user", content: run.text, attachments: run.attachments, directory: run.directory });
+      result.push({ id: `assistant-${run.id}`, role: "assistant", content: run.reply + (run.error ? `\n\n${run.error}` : ""), steps: run.steps, progress: run.progress, artifacts: run.artifacts, metrics: run.metrics, state: isActive(run) ? "running" : run.status === "completed" ? "done" : run.status === "stopped" ? "stopped" : "error" });
+    }
+    return result.map(message => ({ ...message, steps: message.steps?.map(step => {
+      const id = (step.result as { meta?: { confirmation?: { id?: string } } })?.meta?.confirmation?.id;
+      return id && confirmed[id] ? confirmed[id] : step;
+    }) }));
+  }, [history, sessionRuns, confirmed]);
 
-  async function newChat() {
-    if (activeRun.current) await stopRun();
-    rememberSession(randomId()); setMessages([]); setAttachments([]); setDirectory(null);
-    if (window.innerWidth <= 760) setSidebarOpen(false);
-  }
-
+  function openSession(id: string) { rememberSession(id); setAttachments([]); setDirectory(null); if (window.innerWidth <= 760) setSidebarOpen(false); }
+  function newChat() { openSession(randomId()); }
   async function deleteSession(id: string) {
-    if (running || !window.confirm("确定删除这个会话吗？")) return;
-    try {
-      await api(`/api/sessions/${id}`, { method: "DELETE" });
-      if (id === sessionId) await newChat();
-      await loadSessions();
-    } catch (error) { setNotice(error instanceof Error ? error.message : "删除失败"); }
+    if (!window.confirm("确定删除这个会话吗？")) return;
+    try { await api(`/api/sessions/${id}`, { method: "DELETE" }); if (id === sessionId) newChat(); await loadSessions(); }
+    catch (error) { setNotice((error as Error).message); }
   }
-
   async function logout() {
-    try { await api("/api/auth/logout", { method: "POST" }); } catch { /* Session may already be expired. */ }
+    try { await api("/api/auth/logout", { method: "POST" }); } catch { /* Keep local logout available. */ }
     setCsrfToken(""); onLogout();
   }
-
-  function updateAssistant(id: string, updater: (message: ChatMessage) => ChatMessage) {
-    setMessages((items) => items.map((item) => item.id === id ? updater(item) : item));
-  }
-
-  function mergeStep(steps: ToolStep[], incoming: ToolStep) {
-    const index = incoming.id ? steps.findIndex((item) => item.id === incoming.id) : -1;
-    if (index < 0) return [...steps, incoming];
-    const next = [...steps]; next[index] = { ...incoming, progress: incoming.progress || steps[index].progress }; return next;
-  }
-
   async function sendMessage(text: string, skill: Skill | null) {
-    const messageId = `assistant-${Date.now()}`;
-    const files = [...attachments];
-    const selectedDirectory = directory;
-    setAttachments([]); setDirectory(null);
-    setMessages((items) => [...items,
-      { id: `user-${Date.now()}`, role: "user", content: text, attachments: files, directory: selectedDirectory || undefined, state: "done" },
-      { id: messageId, role: "assistant", content: "", steps: [], state: "running" },
-    ]);
-    const run = { id: randomId(), controller: new AbortController() };
-    activeRun.current = run; setRunning(true);
+    if (submitting) return false;
+    setSubmitting(true);
+    setScrollRequest(value => value + 1);
+    // Reacquire audio in the send gesture after keyboard dictation releases the microphone.
+    if (speaking) void narration.unlock().catch(error => setNotice((error as Error).message));
+    const signature = JSON.stringify({ text, attachments, directory, provider, skill: skill?.name || null });
+    const previous = requests.current.get(sessionId);
+    const requestId = previous?.signature === signature ? previous.id : randomId();
+    requests.current.set(sessionId, { signature, id: requestId });
+    const request = { text, attachments, directory, provider, session_id: sessionId, run_id: requestId, skill: skill?.name || null };
     try {
-      const response = await apiResponse("/api/chat/stream", {
-        method: "POST",
-        body: JSON.stringify({ text, attachments: files, directory: selectedDirectory, provider, session_id: sessionId, run_id: run.id, skill: skill?.name || null }),
-        signal: run.controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail || `请求失败 (${response.status})`);
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let pendingText = "";
-      let finished = false;
-      let frame = 0;
-      const flushText = () => {
-        if (!pendingText) return;
-        const delta = pendingText; pendingText = "";
-        updateAssistant(messageId, (message) => ({ ...message, content: message.content + delta }));
-      };
-      const scheduleText = () => {
-        if (frame) return;
-        frame = requestAnimationFrame(() => { frame = 0; flushText(); });
-      };
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n"); buffer = chunks.pop() || "";
-        for (const chunk of chunks) {
-          const parsed = parseSseEvent(chunk); if (!parsed) continue;
-          if (parsed.name === "assistant_delta") { pendingText += String(parsed.data.text || ""); scheduleText(); continue; }
-          if (parsed.name === "keepalive") {
-            const seconds = Number(parsed.data.elapsed_seconds);
-            if (Number.isFinite(seconds)) setElapsedSeconds(Math.max(0, Math.floor(seconds)));
-            continue;
-          }
-          flushText();
-          if (["tool_start", "tool_progress", "tool_result", "confirmation_required"].includes(parsed.name)) {
-            const step = parsed.data as ToolStep;
-            if (parsed.name === "tool_start") {
-              updateAssistant(messageId, (message) => ({ ...message, steps: mergeStep(message.steps || [], step) }));
-            } else if (parsed.name === "tool_progress") {
-              updateAssistant(messageId, (message) => {
-                const steps = [...(message.steps || [])];
-                const index = steps.findIndex((item) => item.id === step.id);
-                if (index >= 0) steps[index] = { ...steps[index], progress: `${step.text || ""}${steps[index].progress || ""}`.slice(0, 30000) } as ToolStep;
-                else steps.push({ ...step, progress: String(step.text || "") });
-                return { ...message, steps };
-              });
-            } else updateAssistant(messageId, (message) => ({ ...message, steps: mergeStep(message.steps || [], step) }));
-          } else if (parsed.name === "agent_done") {
-            finished = true;
-            const finalReply = String(parsed.data.reply || "");
-            const artifacts = Array.isArray(parsed.data.artifacts) ? parsed.data.artifacts as Artifact[] : [];
-            const metrics = (parsed.data.metrics || {}) as RunMetrics;
-            updateAssistant(messageId, (message) => ({ ...message, content: finalReply || message.content, artifacts, metrics, state: "done" }));
-          } else if (parsed.name === "agent_stopped" || parsed.name === "agent_timeout") {
-            finished = true;
-            updateAssistant(messageId, (message) => ({ ...message, state: "stopped" }));
-          } else if (parsed.name === "agent_error") {
-            finished = true;
-            updateAssistant(messageId, (message) => ({ ...message, content: String(parsed.data.error || "任务执行失败"), state: "error" }));
-          }
-        }
-      }
-      flushText();
-      if (!finished) throw new Error("流式连接意外结束，请重试");
-      await loadSessions();
-    } catch (error) {
-      if ((error as Error).name !== "AbortError") updateAssistant(messageId, (message) => ({ ...message, content: (error as Error).message, state: "error" }));
-    } finally {
-      activeRun.current = null; setRunning(false);
-    }
+      await api<Run>("/api/runs", { method: "POST", body: JSON.stringify(request) });
+      requests.current.delete(request.session_id);
+      if (currentSession.current === request.session_id) { setAttachments([]); setDirectory(null); }
+      void loadSessions(); return true;
+    } catch (error) { setNotice(`提交未确认，请先查看任务列表，避免重复执行业务。${(error as Error).message}`); return false; }
+    finally { setSubmitting(false); }
   }
-
   async function stopRun() {
-    const run = activeRun.current; if (!run) return;
-    try {
-      await api("/api/chat/stop", { method: "POST", body: JSON.stringify({ session_id: sessionId, run_id: run.id }) });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "停止失败"); run.controller.abort();
-    }
+    if (!active) return;
+    try { await api("/api/chat/stop", { method: "POST", body: JSON.stringify({ session_id: active.session_id, run_id: active.id }) }); }
+    catch (error) { setNotice((error as Error).message); }
   }
-
-  async function confirmTool(messageId: string, confirmationId: string) {
+  async function confirmTool(_messageId: string, confirmationId: string) {
     try {
       const data = await api<{ step: ToolStep }>("/api/tool/confirm", { method: "POST", body: JSON.stringify({ confirmation_id: confirmationId }) });
-      updateAssistant(messageId, (message) => {
-        const remaining = (message.steps || []).filter((step) => {
-          const result = step.result as { meta?: { confirmation?: { id?: string } } } | undefined;
-          return result?.meta?.confirmation?.id !== confirmationId;
-        });
-        const result = data.step.result as { ok?: boolean } | undefined;
-        return {
-          ...message,
-          content: result?.ok === false ? "已确认执行，但工具执行失败，请展开上方记录查看原因。" : "已确认并执行，结果见上方执行记录。",
-          steps: [...remaining, data.step],
-        };
-      });
-    } catch (error) { setNotice(error instanceof Error ? error.message : "确认失败"); }
+      setConfirmed(previous => ({ ...previous, [confirmationId]: data.step }));
+    } catch (error) { setNotice((error as Error).message); }
   }
 
   function chooseProvider(value: string) { setProvider(value); localStorage.setItem("czon_agent_provider", value); }
+  async function toggleNarration() {
+    if (speaking) { setSpeaking(false); return; }
+    try { await narration.unlock(); setSpeaking(true); }
+    catch { setNotice("设备未能开启声音，请再点击一次播报按钮"); }
+  }
 
   return (
-    <div className="chat-app">
-      <Sidebar identity={identity} sessions={sessions} activeId={sessionId} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNew={newChat} onOpen={openSession} onDelete={deleteSession} onLogout={logout} />
+    <div className={`chat-app ${display ? "display-mode" : ""}`}>
+      {!display && <Sidebar identity={identity} sessions={sessions} runningIds={activeSessions} activeId={sessionId} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNew={newChat} onOpen={openSession} onDelete={deleteSession} onLogout={logout} />}
       <section className="chat-workspace">
         <header className="chat-header">
-          <button className="icon-button" title={sidebarOpen ? "收起侧栏" : "打开侧栏"} onClick={() => setSidebarOpen(!sidebarOpen)}>{sidebarOpen ? <Menu size={18} /> : <PanelLeftOpen size={18} />}</button>
+          {!display && <button className="icon-button" aria-label="切换会话侧栏" title={sidebarOpen ? "收起侧栏" : "打开侧栏"} onClick={() => setSidebarOpen(!sidebarOpen)}>{sidebarOpen ? <Menu size={18} /> : <PanelLeftOpen size={18} />}</button>}
           <div className="header-copy">
             <div className="header-title">
-              <span className="header-product"><strong>数据不出门</strong>{" "}<strong className="header-focus">专注自己业务</strong><strong>的企业级 AI 智能体</strong></span>
-              <span className={`header-status ${running ? "is-running" : ""}`}>· {running ? `正在执行 ${formatElapsed(elapsedSeconds)}` : "就绪"}</span>
+              <strong className="workspace-title">{display ? "任务大屏" : "AI智能体"}</strong>
+              {(!connected || running) && <span className={`header-status ${running ? "is-running" : ""}`}>{!connected ? "正在重连" : `执行中 · ${formatElapsed(elapsedSeconds)}`}</span>}
             </div>
           </div>
+          <div className="header-actions">
+            {!display && <button className="icon-button" aria-label="新任务" title="新任务" onClick={newChat}><Plus size={20} /></button>}
+            <Link className="icon-button display-link" to={display ? "/" : "/display"} aria-label={display ? "返回工作台" : "打开大屏模式"} title={display ? "返回工作台" : "大屏模式"}><Monitor size={19} /></Link>
+            <button className={`icon-button narration-toggle ${speaking ? "is-active" : ""}`} title={speaking ? "关闭本机播报" : "开启本机播报"} aria-label={speaking ? "关闭本机播报" : "开启本机播报"} onClick={() => void toggleNarration()} aria-pressed={speaking}>{speaking ? <Volume2 size={19} /> : <VolumeX size={19} />}</button>
+          </div>
         </header>
-        <MessageList messages={messages} onConfirm={confirmTool} runElapsedSeconds={running ? elapsedSeconds : undefined} />
+        <MessageList key={`messages-${sessionId}`} messages={messages} userName={identity.username} scrollRequest={scrollRequest} waitingRun={active} narrated={speaking} onConfirm={confirmTool} runElapsedSeconds={running ? elapsedSeconds : undefined} />
         {!providers.some((item) => item.configured) && <div className="no-model-banner">
           <span>{identity.is_admin ? "尚未配置模型，完成配置后即可开始对话。" : "系统尚未配置模型，请联系管理员。"}</span>
           {identity.is_admin && <a href="/admin/models"><Settings size={14} />配置模型</a>}
         </div>}
-        <Composer providers={providers} provider={provider} onProvider={chooseProvider} skills={skills} attachments={attachments} onAttachments={setAttachments} directory={directory} onDirectory={setDirectory} running={running} onSend={sendMessage} onStop={stopRun} onNotice={setNotice} />
+        {!display && <Composer key={`composer-${sessionId}`} providers={providers} provider={provider} onProvider={chooseProvider} skills={skills} attachments={attachments} onAttachments={setAttachments} directory={directory} onDirectory={setDirectory} running={running} onSend={sendMessage} onStop={stopRun} onNotice={setNotice} />}
       </section>
-      {notice && <button className="toast" onClick={() => setNotice("")}>{notice}</button>}
+      {notice && <button className="toast" aria-live="polite" onClick={() => setNotice("")}>{notice}</button>}
     </div>
   );
 }

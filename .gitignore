@@ -56,3 +56,6 @@ skills/post-treatment-followup/
 .vscode/
 .claude/
 *.swp
+
+# Local HTTPS certificates and private keys
+certs/

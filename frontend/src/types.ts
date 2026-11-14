@@ -37,7 +37,7 @@ export type Artifact = {
   download_url: string;
 };
 
-export type Skill = { name: string; description: string };
+export type Skill = { name: string; description: string; display_name?: string; display_description?: string };
 
 export type Provider = {
   name: string;
@@ -56,6 +56,7 @@ export type ToolStep = {
   progress?: string;
   text?: string;
   duration_ms?: number;
+  started_at?: string;
 };
 
 export type RunMetrics = { duration_ms?: number; input_tokens?: number; output_tokens?: number };
@@ -70,6 +71,7 @@ export type ChatMessage = {
   steps?: ToolStep[];
   state?: "running" | "done" | "stopped" | "error";
   metrics?: RunMetrics;
+  progress?: string;
 };
 
 export type UserRecord = {

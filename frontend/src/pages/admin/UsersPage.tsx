@@ -30,14 +30,14 @@ export function UsersPage() {
   }
 
   async function update(user: UserRecord, changes: Partial<UserRecord>) {
-    try { await api(`/api/admin/users/${user.username}`, { method: "PUT", body: JSON.stringify({ role: changes.role ?? user.role, active: changes.active ?? user.active, department_id: changes.department_id !== undefined ? changes.department_id : user.department_id || null, monthly_token_quota_million: changes.monthly_token_quota_million !== undefined ? changes.monthly_token_quota_million : user.monthly_token_quota_million ?? null }) }); await load(); }
+    try { await api(`/api/admin/users/${encodeURIComponent(user.username)}`, { method: "PUT", body: JSON.stringify({ role: changes.role ?? user.role, active: changes.active ?? user.active, department_id: changes.department_id !== undefined ? changes.department_id : user.department_id || null, monthly_token_quota_million: changes.monthly_token_quota_million !== undefined ? changes.monthly_token_quota_million : user.monthly_token_quota_million ?? null }) }); await load(); }
     catch (error) { setNotice((error as Error).message); }
   }
 
   async function reset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return;
     const password = new FormData(event.currentTarget).get("password");
-    try { await api(`/api/admin/users/${selected.username}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }); setDialog(null); setNotice("临时密码已更新"); await load(); }
+    try { await api(`/api/admin/users/${encodeURIComponent(selected.username)}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }); setDialog(null); setNotice("临时密码已更新"); await load(); }
     catch (error) { setNotice((error as Error).message); }
   }
 
@@ -54,7 +54,7 @@ export function UsersPage() {
       <td>{formatTime(user.last_login_at)}</td>
       <td><button className="text-button" onClick={() => { setSelected(user); setDialog("reset"); }}><KeyRound size={14} />重置密码</button></td>
     </tr>)}</tbody></table>{!filtered.length && <EmptyTable text="没有匹配的用户" />}</div>
-    {dialog === "create" && <Modal title="创建用户" onClose={() => setDialog(null)}><form className="modal-form" onSubmit={create}><label>用户名<input name="username" required /></label><label>临时密码<input name="password" type="password" minLength={6} required /></label><label>所属部门<select name="department_id"><option value="">未分配</option>{departments.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>角色<select name="role">{roles.map((role) => <option key={role.name}>{role.name}</option>)}</select></label><label>每月 Token 额度（百万）<input name="monthly_token_quota_million" type="number" min="0" step="0.1" placeholder="留空则继承部门" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setDialog(null)}>取消</button><button className="primary-button"><UserRoundCog size={16} />创建</button></div></form></Modal>}
+    {dialog === "create" && <Modal title="创建用户" onClose={() => setDialog(null)}><form className="modal-form" onSubmit={create}><label>用户名<input name="username" maxLength={64} placeholder="支持中文，例如：张三、财务小王" required /></label><label>临时密码<input name="password" type="password" minLength={6} required /></label><label>所属部门<select name="department_id"><option value="">未分配</option>{departments.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>角色<select name="role">{roles.map((role) => <option key={role.name}>{role.name}</option>)}</select></label><label>每月 Token 额度（百万）<input name="monthly_token_quota_million" type="number" min="0" step="0.1" placeholder="留空则继承部门" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setDialog(null)}>取消</button><button className="primary-button"><UserRoundCog size={16} />创建</button></div></form></Modal>}
     {dialog === "reset" && selected && <Modal title={`重置 ${selected.username} 的密码`} onClose={() => setDialog(null)}><form className="modal-form" onSubmit={reset}><p className="form-hint">用户下次登录时需要修改此临时密码。</p><label>新临时密码<input name="password" type="password" minLength={6} autoFocus required /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setDialog(null)}>取消</button><button className="primary-button"><KeyRound size={16} />确认重置</button></div></form></Modal>}
     {notice && <button className="toast" onClick={() => setNotice("")}>{notice}</button>}
   </main>;

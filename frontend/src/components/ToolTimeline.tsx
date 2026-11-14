@@ -1,65 +1,25 @@
-import { Check, ChevronDown, CircleAlert, LoaderCircle, ShieldAlert } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import type { ToolStep } from "../types";
 
-type Props = { steps: ToolStep[]; onConfirm: (id: string) => void; runElapsedSeconds?: number; completed?: boolean; durationMs?: number };
-
-function confirmation(step: ToolStep) {
-  const result = step.result as { meta?: { confirmation?: { id?: string; reason?: string } }; error?: { type?: string } } | undefined;
-  return result?.meta?.confirmation;
-}
-
-function failed(step: ToolStep) {
-  const result = step.result as { ok?: boolean; error?: unknown } | undefined;
-  return Boolean(result?.error || result?.ok === false);
-}
-
-export function ToolTimeline({ steps, onConfirm, runElapsedSeconds, completed = false, durationMs }: Props) {
-  if (!steps.length) return null;
-  const hasConfirmation = steps.some((step) => Boolean(confirmation(step)?.id));
-  const hasFailure = steps.some((step) => failed(step) && !confirmation(step));
-  const events = steps.map((step, index) => {
-        const confirm = confirmation(step);
-        const isRunning = !step.result;
-        const isFailed = failed(step) && !confirm;
-        return (
-          <details className={`tool-event ${isFailed ? "is-error" : ""} ${confirm ? "is-confirm" : ""}`} open={isRunning || Boolean(confirm?.id)} key={`${step.id || step.name}-${index}`}>
-            <summary>
-              <span className="tool-state">
-                {isRunning ? <LoaderCircle className="spin" size={14} /> : confirm ? <ShieldAlert size={14} /> : isFailed ? <CircleAlert size={14} /> : <Check size={14} />}
-              </span>
-              <span className="tool-title">
-                {step.name || "工具"}
-                {step.duration_ms !== undefined
-                  ? <small>{formatDuration(step.duration_ms)}</small>
-                  : isRunning && runElapsedSeconds !== undefined
-                    ? <small>运行中 · {formatElapsed(runElapsedSeconds)}</small>
-                    : null}
-              </span>
-              <span className="tool-args">{step.args ? JSON.stringify(step.args) : ""}</span>
-              <ChevronDown className="tool-chevron" size={15} />
-            </summary>
-            <pre>{step.progress || JSON.stringify(step.result || {}, null, 2)}</pre>
-            {confirm?.id && <button className="warning-button" onClick={(event) => { event.preventDefault(); onConfirm(confirm.id!); }}>确认执行</button>}
-          </details>
-        );
-      });
-  if (!completed) return <div className="tool-timeline">{events}</div>;
-  return <details className={`tool-run ${hasFailure ? "is-error" : ""}`} open={hasConfirmation || undefined}>
-    <summary>
-      <span className="tool-state">{hasFailure ? <CircleAlert size={14} /> : <Check size={14} />}</span>
-      <span><strong>执行记录</strong><small>{steps.length} 个步骤{durationMs !== undefined ? ` · ${formatDuration(durationMs)}` : ""}</small></span>
-      <ChevronDown className="tool-chevron" size={15} />
-    </summary>
-    <div className="tool-timeline">{events}</div>
-  </details>;
-}
-
-function formatElapsed(seconds: number) {
-  if (seconds < 60) return `${seconds} 秒`;
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
-}
-
-function formatDuration(milliseconds: number) {
-  if (milliseconds < 1000) return `${milliseconds} ms`;
-  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+type Props = { steps: ToolStep[]; onConfirm: (id: string) => void; runElapsedSeconds?: number; completed?: boolean; durationMs?: number; outcome?: string };
+export function ToolTimeline({ steps, onConfirm, runElapsedSeconds, completed = false }: Props) {
+  const confirmations = steps.flatMap(step => {
+    const result = step.result as { meta?: { confirmation?: { id?: string; reason?: string } } } | undefined;
+    const confirmation = result?.meta?.confirmation;
+    return confirmation?.id ? [{ step, confirmation }] : [];
+  });
+  const pending = [...steps].reverse().find(step => !step.result);
+  const status = confirmations.length ? "需要你确认这项操作" : pending
+    ? ({ activate_skill: "正在了解业务规则", read: "正在阅读相关资料", write: "正在整理成果", bash: "正在处理业务数据" } as Record<string, string>)[pending.name] || "正在处理请求"
+    : "正在组织回复";
+  if (completed && !confirmations.length) return null;
+  return <section className="process-summary" aria-label="处理进度">
+    {!completed && <div className="process-status"><span className="waiting-sheen" role="status">{status}</span>{runElapsedSeconds !== undefined && <small>已处理 {runElapsedSeconds < 60 ? `${runElapsedSeconds} 秒` : `${Math.floor(runElapsedSeconds / 60)} 分 ${runElapsedSeconds % 60} 秒`}</small>}</div>}
+    {confirmations.map(({ step, confirmation }) => <section className="operation-confirmation" key={confirmation.id}>
+      <strong><ShieldAlert size={16} />这项操作需要你确认</strong>
+      <p>{confirmation.reason || "请核对操作内容后再继续。"}</p>
+      <details><summary>核对操作内容</summary><pre>{JSON.stringify(step.args || {}, null, 2)}</pre></details>
+      <button className="warning-button" onClick={() => onConfirm(confirmation.id!)}>确认执行</button>
+    </section>)}
+  </section>;
 }

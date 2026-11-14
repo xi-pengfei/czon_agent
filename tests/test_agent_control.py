@@ -50,6 +50,29 @@ def make_agent(llm, max_errors=3):
 
 
 class AgentControlTests(unittest.TestCase):
+    def test_public_stream_separates_rounds_and_keeps_final_reply_clean(self):
+        agent = make_agent(CountingLLM(0))
+        calls = 0
+        def complete(system, messages, tools, on_delta=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            on_delta("先读取资料。" if calls == 1 else "已核对完成。")
+            return tool_call(1) if calls == 1 else SimpleNamespace(content="已核对完成。", tool_calls=None)
+        agent._complete = complete
+        received = []
+        reply, steps = agent.run("核对", on_delta=received.append)
+        self.assertEqual("".join(received), "先读取资料。\n\n已核对完成。")
+        self.assertEqual(reply, "已核对完成。")
+        self.assertEqual(len(steps), 1)
+
+    def test_reasoning_content_is_not_forwarded_to_public_stream(self):
+        agent = make_agent(CountingLLM(0))
+        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+            content="公开处理说明", reasoning_content="内部推理", tool_calls=None))])
+        received = []
+        agent._consume_stream(iter([chunk]), received.append, None, None)
+        self.assertEqual(received, ["公开处理说明"])
+
     def test_more_than_fifteen_rounds_can_complete(self):
         llm = CountingLLM(tool_rounds=20)
         agent = make_agent(llm)

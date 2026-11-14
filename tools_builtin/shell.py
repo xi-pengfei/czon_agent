@@ -36,6 +36,7 @@ def run_bash(
         timeout = min(timeout, max(1, int(control_timeout)))
     logger.info("执行 bash 命令：%s", _redact(command[:200]))
     process = None
+    stop_readers = threading.Event()
     try:
         process_env = os.environ.copy()
         process_env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{process_env.get('PATH', '')}"
@@ -54,15 +55,16 @@ def run_bash(
             start_new_session=True,
             env=process_env,
         )
-        output_queue = queue.Queue()
+        output_queue = queue.Queue(maxsize=256)
         readers = [
-            threading.Thread(target=_read_stream, args=(process.stdout, "stdout", output_queue), daemon=True),
-            threading.Thread(target=_read_stream, args=(process.stderr, "stderr", output_queue), daemon=True),
+            threading.Thread(target=_read_stream, args=(process.stdout, "stdout", output_queue, stop_readers), daemon=True),
+            threading.Thread(target=_read_stream, args=(process.stderr, "stderr", output_queue, stop_readers), daemon=True),
         ]
         for reader in readers:
             reader.start()
 
         outputs = {"stdout": [], "stderr": []}
+        output_chars = {"stdout": 0, "stderr": 0}
         closed_streams = 0
         progress_chars = 0
         progress_truncated = False
@@ -92,7 +94,10 @@ def run_bash(
             if line is None:
                 closed_streams += 1
                 continue
-            outputs[stream_name].append(line)
+            remaining_output = _MAX_OUTPUT + 1 - output_chars[stream_name]
+            if remaining_output > 0:
+                outputs[stream_name].append(line[:remaining_output])
+                output_chars[stream_name] += min(len(line), remaining_output)
             last_progress = time.monotonic()
             if progress_callback and progress_chars < _MAX_PROGRESS:
                 safe_line = _redact(line)
@@ -141,14 +146,26 @@ def run_bash(
             "truncated": False,
         }
 
+    finally:
+        stop_readers.set()
 
-def _read_stream(stream, stream_name: str, output_queue: queue.Queue) -> None:
+
+def _read_stream(stream, stream_name: str, output_queue: queue.Queue, stop_readers: threading.Event) -> None:
+    def put(item):
+        while not stop_readers.is_set():
+            try:
+                output_queue.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
     try:
-        for line in iter(stream.readline, ""):
-            output_queue.put((stream_name, line))
+        for line in iter(lambda: stream.readline(4096), ""):
+            if stop_readers.is_set():
+                break
+            put((stream_name, line))
     finally:
         stream.close()
-        output_queue.put((stream_name, None))
+        put((stream_name, None))
 
 
 def _terminate_process_group(process: subprocess.Popen) -> None:

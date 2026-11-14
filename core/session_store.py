@@ -62,9 +62,18 @@ class SessionStore:
                 """
             )
             message_columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")}
+            if "run_id" not in message_columns:
+                connection.execute("ALTER TABLE chat_messages ADD COLUMN run_id TEXT")
             for column in ("duration_ms", "input_tokens", "output_tokens"):
                 if column not in message_columns:
                     connection.execute(f"ALTER TABLE chat_messages ADD COLUMN {column} INTEGER")
+
+    def ensure_session(self, session_id: str, owner: str, title: str):
+        with self._lock, self._connect() as connection:
+            connection.execute("INSERT INTO chat_sessions(id,owner,title,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING", (session_id, owner, title[:28] or "新对话", _now(), _now()))
+            row = connection.execute("SELECT owner FROM chat_sessions WHERE id=?", (session_id,)).fetchone()
+            if row[0] != owner:
+                raise PermissionError("session owner mismatch")
 
     def list_sessions(self, owner: str, limit: int = 100) -> list[dict]:
         with self._lock, self._connect() as connection:
@@ -86,7 +95,7 @@ class SessionStore:
             if session is None:
                 return None
             message_rows = connection.execute(
-                """SELECT id, role, content, created_at, duration_ms, input_tokens, output_tokens
+                """SELECT id, role, content, created_at, duration_ms, input_tokens, output_tokens, run_id
                    FROM chat_messages WHERE session_id = ? ORDER BY id""",
                 (session_id,),
             ).fetchall()
@@ -141,6 +150,7 @@ class SessionStore:
         title: str,
         artifacts: list[dict] | None = None,
         metrics: dict | None = None,
+        run_id: str | None = None,
     ) -> None:
         timestamp = _now()
         with self._lock, self._connect() as connection:
@@ -156,17 +166,17 @@ class SessionStore:
                 (session_id, owner, title, timestamp, timestamp),
             )
             connection.execute(
-                """INSERT INTO chat_messages(session_id, role, content, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, "user", user_content, timestamp),
+                """INSERT INTO chat_messages(session_id, role, content, created_at, run_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, "user", user_content, timestamp, run_id),
             )
             metrics = metrics or {}
             assistant = connection.execute(
                 """INSERT INTO chat_messages
-                   (session_id, role, content, duration_ms, input_tokens, output_tokens, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (session_id, role, content, duration_ms, input_tokens, output_tokens, created_at, run_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (session_id, "assistant", assistant_content, metrics.get("duration_ms"),
-                 metrics.get("input_tokens"), metrics.get("output_tokens"), timestamp),
+                 metrics.get("input_tokens"), metrics.get("output_tokens"), timestamp, run_id),
             )
             for item in artifacts or []:
                 connection.execute(
@@ -176,6 +186,13 @@ class SessionStore:
                     (item["id"], session_id, assistant.lastrowid, item["name"], item["source_path"],
                      item["storage_name"], item["mime"], item["size"], item["created_at"]),
                 )
+
+    def workspace_artifacts(self, session_id: str, owner: str):
+        with self._lock, self._connect() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT a.source_path,a.storage_name FROM chat_artifacts a
+                   JOIN chat_sessions s ON s.id=a.session_id WHERE s.id=? AND s.owner=?
+                   ORDER BY a.message_id""", (session_id, owner))]
 
     def get_artifact(self, artifact_id: str, owner: str) -> dict | None:
         with self._lock, self._connect() as connection:

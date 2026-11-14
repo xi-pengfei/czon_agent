@@ -8,9 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from rich.logging import RichHandler
+from rich.console import Console
 
 
-def setup_logging(log_dir: str = "logs", level: int = logging.INFO) -> None:
+def setup_logging(log_dir: str = "logs", level: int = logging.INFO, *, stderr: bool = False) -> None:
     root = logging.getLogger()
     root.setLevel(level)
     if getattr(root, "_czon_logging_configured", False):
@@ -36,6 +37,7 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO) -> None:
 
     # stdout handler（rich 彩色）
     rich_handler = RichHandler(
+        console=Console(stderr=True) if stderr else None,
         rich_tracebacks=True,
         show_path=False,
         markup=False,

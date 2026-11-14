@@ -1,6 +1,9 @@
 ---
 name: enterprise-skill-creator
 description: Create a new enterprise Agent Skill, modify an installed Skill, or create a new Skill from an existing one. Use for iterative design, testing, validation, and packaging of private business-process Skills for czon_agent.
+metadata:
+  display_name: 企业技能创建助手
+  display_description: 创建、修改企业技能，生成可验证的技能草稿
 ---
 
 # Enterprise Skill Creator
@@ -52,6 +55,7 @@ Prefer the Agent's existing tools and installed Skills over duplicate code. Keep
 Follow the current Agent Skills specification:
 
 - `SKILL.md` starts with YAML frontmatter containing `name` and `description`.
+- Include `metadata.display_name` (a concise Chinese user-facing name) and `metadata.display_description` (a short Chinese explanation of the purpose). Keep the English `name` as the stable execution identifier; do not translate or rename existing identifiers. Older Skills without these optional fields remain supported.
 - `name` is 1-64 characters, contains only lowercase letters, numbers, and single hyphens, and matches the parent folder.
 - `description` is 1-1024 characters and states both what the Skill does and when to use it.
 - Instructions and resource links use paths relative to the Skill root.

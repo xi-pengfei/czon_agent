@@ -92,16 +92,17 @@ export function AuthView({ identity, setupRequired, setupCode, onAuthenticated }
               <h2>{setupRequired ? "设置管理员密码" : changing ? "设置新密码" : "企业登录"}</h2>
               {setupRequired && <p>管理员账号为 admin</p>}
               {changing && <p>首次登录需要更新临时密码</p>}
+              {!setupRequired && !changing && <p>登录账号，继续你的工作</p>}
             </div>
           </div>
           <form className="auth-form" onSubmit={setupRequired ? initialize : changing ? changePassword : login}>
             {setupRequired && <label>管理员账号<input value="admin" disabled /></label>}
             {setupRequired && !setupCode && <label>安装码<input name="setup_code" minLength={12} maxLength={12} autoComplete="one-time-code" required /><small>在服务器运行 .venv/bin/python main.py setup-code 查看</small></label>}
-            {!setupRequired && !changing && <label>账号<input name="username" autoComplete="username" autoFocus required /></label>}
-            {changing && <label>临时密码<input name="old_password" type="password" autoComplete="current-password" autoFocus required /></label>}
-            <label>{changing ? "新密码" : "密码"}<input name={changing ? "new_password" : "password"} type="password" minLength={setupRequired || changing ? 6 : undefined} autoComplete={setupRequired || changing ? "new-password" : "current-password"} autoFocus={setupRequired} required /></label>
+            {!setupRequired && !changing && <label>账号<input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} placeholder="输入你的账号" required /></label>}
+            {changing && <label>临时密码<input name="old_password" type="password" autoComplete="current-password" required /></label>}
+            <label>{changing ? "新密码" : "密码"}<input name={changing ? "new_password" : "password"} type="password" minLength={setupRequired || changing ? 6 : undefined} autoComplete={setupRequired || changing ? "new-password" : "current-password"} placeholder={changing || setupRequired ? "设置至少 6 位密码" : "输入密码"} required /></label>
             {setupRequired && <label>确认密码<input name="password_confirmation" type="password" minLength={6} autoComplete="new-password" required /></label>}
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
             <button className="primary-button" disabled={busy}>{busy ? "请稍候" : setupRequired ? "设置并进入系统" : changing ? "更新并进入系统" : "登录"}<ArrowRight size={16} /></button>
           </form>
         </section>

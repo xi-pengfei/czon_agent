@@ -94,6 +94,35 @@ class AuthTests(unittest.TestCase):
     def login(self):
         return self.client.post("/api/auth/login", json={"username": "admin", "password": "StrongPassword123"})
 
+    def test_chinese_username_create_manage_and_login(self):
+        from urllib.parse import quote
+        csrf = self.login().json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf}
+        for name in ["张三", "财务王_01", "𠮷田"]:
+            created = self.client.post("/api/admin/users", headers=headers,
+                json={"username": name, "password": "123456", "role": "standard"})
+            self.assertEqual(created.status_code, 200, created.text)
+        duplicate = self.client.post("/api/admin/users", headers=headers,
+            json={"username": "张三", "password": "123456", "role": "standard"})
+        self.assertEqual(duplicate.status_code, 409)
+        reset = self.client.post(f"/api/admin/users/{quote('张三')}/reset-password", headers=headers,
+            json={"password": "654321"})
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertEqual(self.client.post("/api/auth/login", json={"username":"张三", "password":"wrong"}).status_code, 401)
+        login = self.client.post("/api/auth/login", json={"username":"张三", "password":"654321"})
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(login.json()["username"], "张三")
+        self.assertEqual(self.client.get("/api/me").json()["username"], "张三")
+
+    def test_username_rejects_paths_whitespace_and_controls(self):
+        csrf = self.login().json()["csrf_token"]
+        for name in ["张/三", "张\\三", "张 三", "张\n三", "张\u200b三", "<张三>", "张" * 65, ""]:
+            response = self.client.post("/api/admin/users", headers={"X-CSRF-Token":csrf},
+                json={"username":name, "password":"123456", "role":"standard"})
+            self.assertEqual(response.status_code, 422, repr(name))
+            self.assertIn("用户名", response.json()["detail"])
+            self.assertEqual(self.client.post("/api/auth/login", json={"username":name,"password":"123456"}).status_code, 422)
+
     def test_api_requires_login(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)
 
