@@ -7,6 +7,8 @@ import { EmptyTable, PageHeader, Toggle } from "./AdminParts";
 type SkillRecord = {
   name: string;
   description: string;
+  display_name?: string;
+  display_description?: string;
   path: string;
   size: number;
   modified_at: string;
@@ -76,7 +78,7 @@ export function SkillsPage() {
     </div>} />
     <div className="table-toolbar"><span>{t("共")} {skills.length}  {t("个 Skill")}</span><span>{t("服务器 Skills 目录")}</span></div>
     <div className="data-table"><table><thead><tr><th>Skill</th><th>{t("目录")}</th><th>{t("大小")}</th><th>{t("更新时间")}</th><th>{t("状态")}</th><th>{t("操作")}</th></tr></thead><tbody>{skills.map((skill) => <tr key={skill.name}>
-      <td><div className="skill-admin-name"><strong>{skill.name}</strong><small>{skill.description}</small></div></td>
+      <td><div className="skill-admin-name"><strong>{skill.display_name || skill.name}</strong><small>{skill.display_description || skill.description}</small><small>{skill.name}</small></div></td>
       <td className="skill-path" title={skill.path}>{skill.path}</td>
       <td>{formatBytes(skill.size)}</td><td>{formatTime(skill.modified_at)}</td>
       <td><Toggle checked={skill.enabled} onChange={(value) => void toggle(skill, value)} label={skill.enabled ? t("启用") : t("停用")} /></td>

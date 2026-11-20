@@ -202,6 +202,8 @@ def describe_skills(skills_dir: Path, settings: dict) -> list[dict]:
         result.append({
             "name": meta.name,
             "description": meta.description,
+            "display_name": (meta.metadata if isinstance(meta.metadata, dict) else {}).get("display_name") or meta.name,
+            "display_description": (meta.metadata if isinstance(meta.metadata, dict) else {}).get("display_description") or meta.description,
             "path": str(meta.path.resolve()),
             "size": size,
             "modified_at": modified_at,
