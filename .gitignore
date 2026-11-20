@@ -59,3 +59,10 @@ skills/post-treatment-followup/
 
 # Local HTTPS certificates and private keys
 certs/
+
+# Local release identity and customer backups
+.release.json
+.skill-backups/
+.upgrade-backups/
+
+.env*.local

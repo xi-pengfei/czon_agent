@@ -1,4 +1,5 @@
 export type Identity = {
+  app_version?: { version: string; revision: string; installed_at: string; modified: boolean; source: string };
   username: string;
   role: string;
   is_admin: boolean;

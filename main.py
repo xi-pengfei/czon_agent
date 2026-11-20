@@ -461,6 +461,10 @@ def _positive_int(section: dict, key: str) -> int:
 
 def main():
     os.chdir(PROJECT_ROOT)
+    if sys.argv[1:] in (["--version"], ["version"]):
+        from core.version import version_info
+        print(json.dumps(version_info(), ensure_ascii=False, indent=2))
+        return
     parser = argparse.ArgumentParser(
         prog="czon_agent",
         description="czon Agent — 极简 Python Agent Runtime",

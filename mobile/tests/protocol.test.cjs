@@ -9,6 +9,30 @@ function load(name) {
 }
 const {serverOrigin, apiUrl, sseParser} = load('protocol');
 const {reduceRun} = load('runs');
+test('LAN builds permit login and session restore even in Release mode', async () => {
+  const code = ts.transpileModule(fs.readFileSync(`${__dirname}/../src/client.ts`, 'utf8'), {compilerOptions: {module: ts.ModuleKind.CommonJS}}).outputText;
+  for (const enabled of [true, false]) {
+    const exports = {};
+    let requests = 0;
+    const credentials = {origin: 'http://192.168.0.35:8000', token: 'test-token', identity: {csrf_token: 'test-csrf'}};
+    vm.runInNewContext(code, {exports, __DEV__: false, URL, Error, AbortSignal, require(name) {
+      if (name === 'expo-constants') return {__esModule: true, default: {expoConfig: {extra: {allowLocalHttp: enabled}}}};
+      if (name === './protocol') return {serverOrigin, apiUrl};
+      if (name === 'expo-secure-store') return {getItemAsync: async () => JSON.stringify(credentials), deleteItemAsync: async () => {}};
+      if (name === 'expo/fetch') return {fetch: async () => {requests++; return {ok: true, json: async () => ({session_token: 'test-token', csrf_token: 'test-csrf'})};}};
+      throw new Error(`Unexpected module: ${name}`);
+    }});
+    if (enabled) {
+      assert.equal((await exports.login(credentials.origin, 'test', 'test')).origin, credentials.origin);
+      assert.equal((await exports.restoreCredentials()).origin, credentials.origin);
+      assert.equal(requests, 1);
+    } else {
+      await assert.rejects(exports.login(credentials.origin, 'test', 'test'));
+      assert.equal(await exports.restoreCredentials(), null);
+      assert.equal(requests, 0);
+    }
+  }
+});
 test('credentials are restricted to one validated server origin', () => {
   assert.equal(serverOrigin('https://agent.example.com/'), 'https://agent.example.com');
   assert.equal(serverOrigin('http://192.168.0.35:8000', true), 'http://192.168.0.35:8000');

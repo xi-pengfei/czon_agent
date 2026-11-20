@@ -2,6 +2,11 @@ import type {ExpoConfig} from 'expo/config';
 const localDevelopment = process.env.CZON_MOBILE_LAN === '1';
 const config: ExpoConfig = {
   name: 'CzON Agent', slug: 'czon-agent-mobile', version: '0.1.0',
+  extra: {
+    allowLocalHttp: localDevelopment,
+    // 不把开发服务器地址写入发布源码。
+    defaultServer: process.env.CZON_DEFAULT_SERVER || '',
+  },
   userInterfaceStyle: 'light', orientation: 'default',
   icon: './assets/icon.png',
   ios: {

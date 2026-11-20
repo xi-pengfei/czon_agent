@@ -706,3 +706,7 @@ html[lang="en"] .welcome-intro h1 { text-wrap:balance; }
   .admin-topbar .language-picker { margin-right:8px; }
 }
 @media (forced-colors:active) { .language-picker select:focus-visible { outline:1px solid Highlight; } }
+
+.app-version { padding: 0 12px 12px; color: var(--text-muted, #64748b); font-size: 11px; overflow-wrap: anywhere; }
+.app-version summary { cursor: pointer; }
+.app-version div { margin-top: 5px; }

@@ -2,16 +2,23 @@ import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {StatusBar} from 'expo-status-bar';
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import {Client, login, restoreCredentials, saveCredentials, type Credentials} from './src/client';
 import {Button, styles, colors} from './src/ui';
 import {languageNames, languages, translator, type Language} from './src/strings';
 import {Workspace} from './src/Workspace';
 
+// 部署地址由构建环境提供；未配置时由用户输入。
+const DEFAULT_SERVER =
+  process.env.EXPO_PUBLIC_CZON_SERVER ||
+  Constants.expoConfig?.extra?.defaultServer ||
+  '';
+
 export default function App() {
   const [auth, setAuth] = useState<Credentials | null>(null), [ready, setReady] = useState(false);
   const [language, setLanguage] = useState<Language>('zh-CN');
-  const [address, setAddress] = useState(''), [username, setUsername] = useState(''), [password, setPassword] = useState('');
+  const [address, setAddress] = useState(DEFAULT_SERVER), [username, setUsername] = useState(''), [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const t = translator(language);
   const expired = useCallback(() => { setAuth(null); void saveCredentials(null); }, []);

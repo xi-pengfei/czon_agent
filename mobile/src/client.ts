@@ -1,9 +1,11 @@
 import { fetch } from 'expo/fetch';
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { apiUrl, serverOrigin } from './protocol';
 import type { Identity } from './types';
 export type Credentials = { origin: string; token: string; identity: Identity };
 const KEY = 'czon.mobile.session.v1';
+const allowLocalHttp = Constants.expoConfig?.extra?.allowLocalHttp === true;
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export class Client {
   constructor(public credentials: Credentials, public expired: () => void) {}
@@ -27,7 +29,7 @@ export class Client {
   async post<T>(path: string, body: unknown): Promise<T> { return (await this.response(path, {method: 'POST', body: JSON.stringify(body)})).json(); }
 }
 export async function login(address: string, username: string, password: string): Promise<Credentials> {
-  const origin = serverOrigin(address, __DEV__);
+  const origin = serverOrigin(address, allowLocalHttp);
   const response = await fetch(apiUrl(origin, '/api/auth/mobile/login'), {
     method: 'POST', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20_000),
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username, password}),
@@ -47,7 +49,7 @@ export async function restoreCredentials(): Promise<Credentials | null> {
   if (!value) return null;
   try {
     const auth = JSON.parse(value);
-    serverOrigin(auth.origin, __DEV__);
+    serverOrigin(auth.origin, allowLocalHttp);
     if (!auth.token || !auth.identity?.csrf_token) throw new Error('Invalid session');
     return auth;
   } catch { await saveCredentials(null); return null; }

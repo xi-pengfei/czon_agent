@@ -514,7 +514,9 @@ def create_app(
         yield
         await asyncio.to_thread(runs.close)
 
-    app = FastAPI(title="czon Agent", version="0.2.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+    from core.version import version_info
+    release_info = version_info()
+    app = FastAPI(title="czon Agent", version=release_info["version"], docs_url=None, redoc_url=None, lifespan=lifespan)
     runs = RunManager(db_path.resolve(), **(run_options or {}))
     app.state.runs = runs
     speech = SpeechService(db_path.resolve().parent / "speech", speech_options)
@@ -821,6 +823,7 @@ def create_app(
         identity = current_identity(request)
         return {
             "username": identity["username"],
+            "app_version": release_info,
             "role": identity["role"],
             "is_admin": bool(identity.get("is_admin")),
             "manage_skills": bool(identity.get("is_admin") or identity.get("manage_skills")),

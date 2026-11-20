@@ -60,6 +60,11 @@ export function Sidebar(props: Props) {
             <button className="icon-button" title={t("退出登录")} onClick={props.onLogout}><LogOut size={17} /></button>
           </div>
         </div>
+        {props.identity.app_version && <details className="app-version">
+          <summary>v{props.identity.app_version.version}{props.identity.app_version.modified ? ` · ${t("本地修改")}` : ""}</summary>
+          <div>Git: <code>{props.identity.app_version.revision}</code></div>
+          {props.identity.app_version.installed_at && <div>{new Date(props.identity.app_version.installed_at).toLocaleString()}</div>}
+        </details>}
       </aside>
     </>
   );
